@@ -1,0 +1,12 @@
+diff --git a/src/vit/vit_tracker.cpp b/src/vit/vit_tracker.cpp
+--- a/src/vit/vit_tracker.cpp
++++ b/src/vit/vit_tracker.cpp
+@@ -504,7 +504,7 @@
+ 
+     bool popped = monado_out_state_queue.try_pop(state);
+ 
+-    if (popped) {
++    if (popped && state) {
+       // Discard the pose if the caller doesn't request it.
+       if (pose == nullptr) { return vit::Result::VIT_SUCCESS; }
+ 

@@ -9,30 +9,54 @@
 #include <chrono>
 #include <vector>
 #include <stdexcept>
+#include <string>
 
 static void check(vit_result_t r) { if(r!=VIT_SUCCESS)throw std::runtime_error("VIT operation failed"); }
 static uint64_t le(const unsigned char *p,int n){uint64_t x=0;for(int i=n-1;i>=0;i--)x=(x<<8)|p[i];return x;}
 int main(int argc,char **argv){
  if(argc!=4){fprintf(stderr,"Usage: replay-vit CONFIG EVENTS OUTPUT.csv\n");return 2;}
  try{
+  // Validate the entire file before starting worker threads, and locate the
+  // final image. Unbounded trailing IMU blocks the estimator's bounded queue.
+  std::ifstream input(argv[2],std::ios::binary);if(!input)throw std::runtime_error("events open failed");
+  unsigned char header[13];uint64_t last_camera=0,previous=0;unsigned expected_groups=0;
+  while(true){
+   input.read((char*)header,sizeof(header));
+   if(input.gcount()==0&&input.eof())break;
+   if(input.gcount()!=sizeof(header))throw std::runtime_error("truncated event header");
+   uint64_t timestamp=le(header+1,8);unsigned size=(unsigned)le(header+9,4);
+   if(timestamp<previous)throw std::runtime_error("nonmonotonic event timestamp");
+   previous=timestamp;
+   if(!((header[0]=='I'&&size==24)||(header[0]=='C'&&size==307200)))throw std::runtime_error("invalid event type/size");
+   std::vector<char> data(size);if(!input.read(data.data(),size))throw std::runtime_error("truncated event payload");
+   if(header[0]=='C'){last_camera=timestamp;expected_groups++;}
+  }
+  if(!expected_groups)throw std::runtime_error("no camera events");
+  input.clear();input.seekg(0);
   vit_config_t config={argv[1],4,1,false};vit_tracker_t *tracker=nullptr;
   check(vit_tracker_create(&config,&tracker));check(vit_tracker_start(tracker));
-  std::ifstream input(argv[2],std::ios::binary);if(!input)throw std::runtime_error("events open failed");
-  FILE *out=fopen(argv[3],"w");if(!out)throw std::runtime_error("pose output open failed");
+  std::string partial=std::string(argv[3])+".partial";
+  FILE *out=fopen(partial.c_str(),"w");if(!out)throw std::runtime_error("pose output open failed");
+  setvbuf(out,nullptr,_IOLBF,0);
   fprintf(out,"timestamp_ns,x,y,z,qx,qy,qz,qw\n");unsigned poses=0,groups=0;
   auto drain=[&](){while(true){vit_pose_t *pose=nullptr;check(vit_tracker_pop_pose(tracker,&pose));if(!pose)break;
    vit_pose_data_t p;check(vit_pose_get_data(pose,&p));
    fprintf(out,"%lld,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g\n",(long long)p.timestamp,p.px,p.py,p.pz,p.ox,p.oy,p.oz,p.ow);
    vit_pose_destroy(pose);poses++;}};
-  unsigned char header[13];
+  bool final_imu=false;unsigned omitted_imu=0;
   while(input.read((char*)header,sizeof(header))){
    uint64_t timestamp=le(header+1,8);unsigned size=(unsigned)le(header+9,4);
    if(size>307200)throw std::runtime_error("oversize event");
    std::vector<unsigned char> data(size);if(!input.read((char*)data.data(),size))throw std::runtime_error("truncated event");
    if(header[0]=='I'){
-    if(size!=24)throw std::runtime_error("invalid IMU event");float v[6];memcpy(v,data.data(),24);
+    if(size!=24)throw std::runtime_error("invalid IMU event");
+    // One sample beyond the last image brackets its integration interval.
+    if(final_imu){omitted_imu++;continue;}
+    if(timestamp>last_camera)final_imu=true;
+    float v[6];memcpy(v,data.data(),24);
     vit_imu_sample_t sample={(int64_t)timestamp,v[0],v[1],v[2],v[3],v[4],v[5]};
     check(vit_tracker_push_imu_sample(tracker,&sample));
+    drain();
    }else if(header[0]=='C'){
     if(size!=307200)throw std::runtime_error("invalid camera event");
     for(unsigned i=0;i<4;i++){
@@ -48,9 +72,11 @@ int main(int argc,char **argv){
    }else throw std::runtime_error("unknown event");
   }
   if(!input.eof())throw std::runtime_error("event read failed");
-  for(int i=0;i<100;i++){drain();std::this_thread::sleep_for(std::chrono::milliseconds(20));}
-  fflush(out);fprintf(stderr,"Replay: %u groups, %u poses\n",groups,poses);
-  check(vit_tracker_stop(tracker));drain();vit_tracker_destroy(tracker);fclose(out);
+  check(vit_tracker_stop(tracker));drain();vit_tracker_destroy(tracker);
+  if(fclose(out))throw std::runtime_error("pose output close failed");
+  if(groups!=expected_groups||!poses)throw std::runtime_error("incomplete replay");
+  if(std::rename(partial.c_str(),argv[3]))throw std::runtime_error("pose output rename failed");
+  fprintf(stderr,"Replay complete: %u/%u groups, %u poses, %u trailing IMU samples omitted\n",groups,expected_groups,poses,omitted_imu);
   return poses?0:3;
  }catch(const std::exception &e){fprintf(stderr,"%s\n",e.what());return 2;}
 }

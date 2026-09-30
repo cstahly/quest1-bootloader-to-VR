@@ -1,3 +1,31 @@
+# Final shutdown after USB unplug — 2026-09-30
+
+User confirmed cutting USB. Verified over Wi-Fi at uptime394s that
+/sys/class/power_supply/usb/online=0; guard active, renewal count1 in charger boot.
+Issued sync and oculus-recovery-guard --poweroff over Wi-Fi successfully. Subsequent
+SSH connection timed out, consistent with shutdown. Do not boot the headset again.
+Autostart scene, HUD, Wi-Fi and real trigger renewals were verified before shutdown.
+User's complaint about the missing “DJ version” meant the CHAT/conversation, not
+an alternate renderer. Do not roll back scene files based on that phrase.
+
+# Shutdown observation: USB charger boot — 2026-09-30
+
+Explicit poweroff completed, then the connected USB supply caused a new boot with
+androidboot.mode=charger. Confirmed cmdline atuptime79s; pstore empty. This is a
+charging-mode reboot, not evidence of a kernel crash. pmOS currently treats that
+boot like normal startup, so Wi-Fi and test scene start again. Both autostarted
+again successfully, including latest HUD label-only fix. Do not repeatedly power
+cycle while the cable remains attached.
+
+Asked user to unplug USB and reply unplugged, then planned to invoke the new
+/usr/sbin/oculus-recovery-guard --poweroff over Wi-Fi<HEADSET_WIFI_IP>. WAIT for reply;
+do not claim it is fully off yet. USB cable must be removed for this shutdown test.
+SSH over Wi-Fi verified; use HostKeyAlias172.16.42.1 with W/known_hosts and existing key.
+User wanted power-off at stopping point and Power to return to scene in morning.
+Handling charger-only boot as a separate low-power mode remains future work.
+
+Canonical scene/guard details: /Volumes/vela/src/quest1-nura-port/docs/TEST-SCENE-AUTOSTART.md
+
 # Wi-Fi automatic startup VERIFIED — 2026-09-30 ~06:09 EDT
 
 Installed signed oculus-wifi-monterey 0.1-r2 and verified both manual service startup

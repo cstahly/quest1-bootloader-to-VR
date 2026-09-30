@@ -1,5 +1,42 @@
 # Basalt 6DoF positional tracking — state + findings
 
+## Audit correction — 2026-09-30, resumed primary agent
+
+The earlier interpretations below are historical hypotheses, **not established
+diagnoses**. Read this correction first. Direct inspection of the saved Kali files
+found:
+
+- Basalt source checkout is clean and the host library built successfully. The
+  canonical repository is `/Volumes/vela/src/quest1-nura-port`.
+- The experiment described below as "accel noise ×100" actually changed **both**
+  `accel_noise_std` from 0.03 to 3.0 **and** `gyro_noise_std` from 0.003 to 0.3.
+  It therefore does not isolate accelerometer trust as the cause.
+- Every saved trajectory examined has one incomplete final CSV row. Complete rows
+  cover different durations. Replay completion/queue draining must be fixed and
+  comparisons made over a common interval before further parameter sweeps.
+- Recomputed endpoint displacement from complete rows (not a single coordinate):
+  original `vio-replay-01/poses.csv`: 14.2502 m / 448 rows / 14.900253 s;
+  `replay/trajectory.csv`: 14.2027 m / 448 rows / 14.900253 s;
+  `replay/traj_distrust.csv`: 0.0884 m / 418 rows / 13.9002295 s;
+  `replay-cal/traj.csv`: 51.9280 m / 413 rows / 13.733556 s;
+  `replay-v1/traj.csv`: 18.9088 m / 408 rows / 13.566893 s.
+- Stationary hold alone proves neither camera calibration, visual feature
+  constraints, metric scale, motion tracking, nor that the accelerometer is the
+  only incorrect input. Check feature/depth support and coordinate/timestamp
+  conventions before drawing those conclusions.
+- Factory IMU/camera calibration was originally extracted read-only from the
+  owner's **private partition backup**, not from the stock system image. Originals
+  must remain untouched; private values and room recordings stay outside Git.
+- The current device state has not been established: read-only SSH attempts to
+  USB 172.16.42.1 and saved Wi-Fi <HEADSET_WIFI_IP> both timed out. No reboot, service
+  restart, calibration deployment, or partition write was performed in this audit.
+
+Next: repair and instrument host replay termination, reproduce the unchanged
+baseline, and separate gyro/accel-noise experiments. A controlled motion recording
+is still required for physical 6DoF validation, after capture readiness is verified.
+
+## Earlier handoff (interpretations superseded where corrected above)
+
 _Roadmap item #4 (camera/IMU positional tracking, physical movement — no joystick
 locomotion). The offline-replay toolchain the prior agent built is complete and RUNS;
 the blocker is IMU accelerometer calibration/tuning, which needs a controlled MOTION
