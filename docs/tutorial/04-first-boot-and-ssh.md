@@ -35,7 +35,7 @@ cat /var/log/oculus-openrc.log                      # reached OpenRC default
 - `blockdev --getss` prints 4096 and mounting root didn't drop the device off the bus
 - PID 1 is `init`, dropbear + USB-recovery are up
 
-**That's a Meta-free Linux Quest 1 with a shell.** Everything past here is extension.
+**That is Linux with a shell on the Quest 1, still using stock firmware components.** Everything past here is extension.
 
 ## Snags
 
@@ -44,7 +44,7 @@ cat /var/log/oculus-openrc.log                      # reached OpenRC default
 - **Shell dies right after `mount`:** 1024-block image — rebuild with `-b 4096` (stage 2).
 - **Net up but no SSH:** early boots lacked `/etc/network/interfaces` and had a competing
   `unudhcpd.usb0`; the r34+ port packages fix both — confirm you built from them.
-- **Back to fastboot after ~5 min:** watchdog, expected. Reboot B to keep going.
+- **Back to fastboot after ~5 min:** watchdog, expected. Inspect slot state before rebooting B; retry exhaustion is covered in [recovery notes](08-safety-and-dead-ends.md).
 
 Detail: `../boot-bringup.md` "CONFIRMED FULL BOOT + SSH", Appendix A (the mapper).
 

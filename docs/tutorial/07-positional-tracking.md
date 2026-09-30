@@ -1,67 +1,88 @@
-# 7 — Positional tracking (Basalt VIO)
+# 7 — Positional tracking: current research, not an installation step
 
-Real 6DoF — walk and the view moves with you. **WIP:** the pipeline runs end-to-end and
-the vision half is proven; the blocker is accelerometer calibration, which needs a
-controlled motion capture that hasn't been nailed yet. This is both how it works and how
-to finish it.
+The installed headset still has **orientation-only tracking (3DoF)**. Leaning or
+walking does not yet move the virtual viewpoint. No live Basalt positional pose has
+been connected to Monado or the scene. Thumbstick locomotion is not the goal.
 
-## How it works
+## What runs
 
-**Basalt** = visual-inertial odometry (cameras + IMU → trajectory), plugged into Monado
-via the VIT interface (`vit_interface.h`). Offline pipeline:
+Basalt from the mateosss fork, pinned at
+`df6e970c8da7636eb401a09e3317fbeaaf829b9a`, implements the VIT interface. The tested
+build is float-only. Our offline path is:
 
 ```
-capture-imu.c + record-sensors.py  →  QVRREC01 recording
-   → prepare-replay.py             →  events.bin + calibration.json
-   → replay-vit.cpp (libbasalt.so) →  trajectory CSV
+passive SyncBoss IMU + four-camera preview → QVRREC01 recording
+→ prepare-replay.py → optional rectify-replay.py
+→ optional select-replay-cameras.py → replay-vit.cpp
+→ timestamp-matched pose CSV + feature counts → summarize-trajectory.py
 ```
 
-Build Basalt from the **mateosss/basalt** fork (implements Monado's VIT ABI),
-**float-only** (`use-double=false`).
+Sources are in [tools/tracking](../../tools/tracking). Raw images, owner calibration,
+recordings and generated calibration files stay outside Git. Captures stream over
+Wi-Fi to the host so unplugging USB does not interrupt them. This is a handheld
+measurement task; walking while wearing an unvalidated tracking system is unnecessary.
 
-## Proven vs. blocking
+The preview has four 320×240 monochrome images at about 30 Hz and the IMU about
+1,015 Hz. Preparation converts accelerometer g to m/s² and gyro degrees/s to radians/s,
+using the measured sensor-to-head mapping `(-Y, -X, -Z)`. MCU ticks and camera times
+are different clocks; transport-derived alignment is approximate, not calibrated
+exposure timing. Optional clock fitting has not resolved the drift.
 
-- ✅ pipeline works end-to-end; vision + camera calibration correct — stationary rig holds
-  ~10 cm *when accel is down-weighted*.
-- ❌ **accelerometer calibration** is the sole blocker. Factory IMU intrinsics were
-  extracted (`imu_calibration.json`: rectification matrix + bias) but applying them naively
-  made drift *worse* — convention/units/sign + trust weighting not pinned down.
-- ⚠️ **bug in `prepare-replay.py`:** it zeros `calib_accel_bias`/`calib_gyro_bias`, i.e.
-  throws away the factory intrinsics. Wire the extracted values in (right convention) as
-  part of the fix.
+## What the evidence actually says
 
-## Finishing it — the motion capture
+- Replay now drains successfully and checks one pose per camera group at the exact
+  input timestamp. Earlier hangs came from excess trailing IMU samples; a separate
+  Basalt null end-of-stream pose bug is fixed by patch 0001.
+- Original stationary replay drifted about 14 m. Down-weighting acceleration reduced
+  that dramatically, but **did not prove visual calibration or correct motion scale**.
+- Original images yielded almost no shared-camera landmarks. Offline rectification
+  to a common virtual pinhole direction improved results. Camera ordering has
+  supporting correspondence evidence, not a completed calibration acceptance test.
+- With rectification, grid size 25, pyramid levels 2 and recovered-distance-squared
+  threshold 1.0, original noise settings gave about 4.9 mm endpoint drift and 24 mm maximum
+  excursion on the stationary clip after the first 3 seconds. This is one clip.
+- A short, small movement returned within about 2.5 cm using the first pose as reference;
+  its travel distance was not measured. Do not label it a successful 50 cm scale test.
+- A 30-second intended 50 cm recording reached about 50 cm, but its endpoint was about 29 cm
+  away and the user was trying to return at the end. That is inconclusive.
+- The 60-second marked recording is saved. It shows substantial estimated translation
+  during an apparently stationary opening. Four-camera replay reached about 87 cm and
+  ended 43 cm away; selecting cameras 0/2 improved shared landmarks but did not remove
+  drift. Endpoint interpretation also needs the user's movement history.
+- Stationary gyro/radial acceleration initialization experiments have not fixed it.
+  Accelerometer convention, initialization, camera matching, timing and extrinsics
+  remain candidates. There is **no established sole blocker**.
 
-Earlier tries failed mechanically: **the cord's unplugged while walking**, so USB-SSH
-commands died mid-capture. Do it over **Wi-Fi**, backgrounded, confirmed-live before the
-walk.
+Factory bias arrays currently zeroed in preparation are a documented uncalibrated
+baseline, not permission to copy factory numbers into an incompatible convention.
+Validate units, axes, matrix direction and bias sign first. Lower drift obtained by
+suppressing acceleration is not sufficient acceptance evidence.
 
-1. Boot, wait for Wi-Fi (stage 5).
-2. Restart `oculus-camera`; start `record-sensors.py` streaming to the host over Wi-Fi as
-   a background process. Confirm frames are arriving *before* moving. Don't record to
-   `/run` — it's tmpfs, wiped by the ~5-min watchdog reboot; stream off-device or write
-   persistent.
-3. Walk: still ~3s → forward ~2m → back onto the mark → still ~3s. Note the real distance.
-4. `prepare-replay.py` (factory bias wired in) → `replay-vit` → trajectory CSV.
-5. Tune the rectification/offset convention + `accel_noise_std` / `accel_bias_std` until
-   the trajectory has correct scale (matches ~2m) and low drift (ends near the mark), with
-   accel *trusted*.
+## Build status and patch selection
 
-## Worked when
+A native aarch64-musl Basalt library and replay executable have built. A three-frame
+real-data replay completed with 3/3 poses inside the ARM buildroot under emulation.
+That proves a small executable smoke test, not headset performance or live 6DoF.
 
-- a Wi-Fi motion capture, stream confirmed live before the walk
-- `replay-vit` gives a trajectory whose forward distance matches the walk and returns near
-  start, with accel trusted (not suppressed)
+Apply [0001](../../patches/basalt/0001-vit-null-end-of-stream-pose.patch) for the EOS
+fix and [0003](../../patches/basalt/0003-headless-cross-build.patch) for the headless
+cross-build. **Do not apply every patch in the directory:** experimental 0002 patch
+rotation did not improve the tested result and was reverted. The cross toolchain is
+[aarch64-musl-toolchain.cmake](../../tools/tracking/aarch64-musl-toolchain.cmake).
+Build dependencies belong in the buildroot, not wholesale on the headset. Runtime
+libraries must be audited and staged privately before a device trial.
 
-## Snags
+## Next gates
 
-- commands time out mid-walk → you're on USB, use Wi-Fi
-- recording gone after reboot → wrote to `/run` (tmpfs) + watchdog rebooted; stream or go
-  persistent
-- meters of "drift" while stationary → headset wasn't moving; a stationary clip can't
-  validate motion. You need an actual walk.
+1. Use the saved recordings to explain stationary startup drift and establish useful
+   cross-camera tracks. No further movement capture is presently required.
+2. Validate measured displacement, return error and stationary stability across clips;
+   document the pose reference and any discarded initialization interval.
+3. Check native dependency closure, bounded runtime cost and failure behavior.
+4. Integrate through Monado's tracking interface with bounded asynchronous sensor
+   delivery. A stalled camera/VIT queue must not block the working orientation thread.
+5. Validate coordinate transforms, tracking loss/recovery, latency and wearer behavior
+   before enabling positional tracking at boot.
 
-Detail: `../basalt-positional-tracking.md` (state, factory `imu_calibration.json` values,
-the `prepare-replay.py` bug, capture gotchas).
-
-→ [8 — gotchas + dead ends](08-safety-and-dead-ends.md)
+[Detailed experiments](../basalt-positional-tracking.md) ·
+[Current work and TODO](09-status-and-next.md) · [Gotchas](08-safety-and-dead-ends.md)

@@ -30,11 +30,19 @@ git apply <this-repo>/patches/pmbootstrap-monterey-4k.patch
 # drops too-new ext4 features (orphan_file, metadata_csum, metadata_csum_seed)
 ```
 
-**3. Build + export:**
+**3. Initialize/configure, then build + export:**
+
+The original host already had pmbootstrap configured for `oculus-monterey`. A fresh
+host must initialize it against the intended pmaports checkout and select the device,
+architecture and intended minimal userspace. Do not blindly accept prompts with
+`yes`; the exact clean-host configuration is an outstanding reproduction item.
+The following commands assume that configuration is already correct. Protect the
+installation password from shell history/process logs in your local workflow.
+
 
 ```
 ./pmbootstrap.py build --force device-oculus-monterey
-./pmbootstrap.py install --password <pw>      # init re-prompts? drive with: yes '' |
+./pmbootstrap.py install --password <pw>
 ./pmbootstrap.py export                        # → boot.img + system_b image
 ```
 

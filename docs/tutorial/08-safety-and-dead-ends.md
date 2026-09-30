@@ -4,11 +4,11 @@ Things that cost time, so you skip them.
 
 ## Dead ends — don't bother
 
-- **GPU acceleration is dead on this hardware.** No open-source Vulkan driver for the
-  **Adreno 540** (Turnip is a6xx+; a540 is out of scope). Monado's compositor is Vulkan →
-  it stays **software (Lavapipe)**, period. Freedreno *GL* over KGSL covers a5xx but
-  SIGSEGVs at EGL init and wouldn't help the Vulkan compositor anyway. Plan around
-  software rendering. (`../KGSL-ACCELERATION.md`)
+- **GPU acceleration is unverified, not ruled out.** The inspected Turnip path does
+  not support Adreno 540. An isolated Freedreno OpenGL KGSL build reaches EGL init
+  but crashes; it has not rendered/read back a frame. That does not prove no GPU
+  path is possible. Monado's Vulkan compositor would need additional integration
+  even if GL succeeds. See [KGSL findings](../KGSL-ACCELERATION.md).
 - **ADSP-only Wi-Fi was wrong** — WLAN is a *modem* protection domain. Don't PIL-boot the
   ADSP for Wi-Fi; run `cnss-daemon` (stage 5).
 - **Boot-logo swap is behind the root of trust.** The "M" is a raw blt buffer drawn by
@@ -26,7 +26,7 @@ Things that cost time, so you skip them.
 - Mounting a **1024-block** rootfs oopses the kernel — that's the 4Kn bug, not a flaky
   link (stage 2).
 - **`pkill -f "<pat>"`** kills its own shell when the pattern matches the invoking
-  command — use `pgrep -f … | xargs kill`.
+  command — inspect exact PIDs, executable names and parentage before terminating a process.
 - **`fastboot`** cmdline flag is `--cmdline`, not `-c`.
 
 ## Device caveats (learned the hard way)
@@ -41,12 +41,27 @@ Things that cost time, so you skip them.
 - The **cnss-daemon holds an open modem FD** — don't restart it in place; it's freed at
   the next recovery reboot.
 
-## The one gap to turnkey
+## Recovery and unfinished production behavior
 
-The rootfs rebuilds clean (stage 2). The boot image still needs the stage-3 hand step
-(device-name root mount + BootSignature graft from your own `boot_b`), because the
-device-name-mount fix isn't in the port initramfs yet. Fold that in — teach the initramfs
-to mount root by mapper device name, and strip the diagnostic scaffolding (30s pause,
-ports 2323/2324, extra watchdogs) — and it's a single `pmbootstrap install`.
+Slot B has a finite retry count. A working Linux boot has still exhausted it and
+returned to fastboot. Inspect `current-slot`, `slot-unbootable:b` and
+`slot-retry-count:b`; the documented owner recovery used `fastboot set_active b`
+followed by reboot **after confirming B held the known guarded image**. This is not
+boot-success marking and not permission to select an unknown slot blindly.
+
+Do not assume pressing Power always returns to the scene indefinitely. Charger mode
+can boot on USB-connected poweroff and omit camera probing. Boot-success marking,
+charger-only behavior and unplugged startup verification remain work.
+
+The blue-logo investigation is paused; bootloader components are untouched. Nothing
+in this guide requires changing XBL/ABL or weakening secure boot.
+
+## More than one gap to turnkey
+
+Boot finalization, clean pmbootstrap setup, private asset extraction, runtime
+packaging, optics/compositor integration and positional tracking remain incomplete.
+Do not strip recovery timers to make an image look production-ready. Debug shells
+are development scaffolding and need a separately reviewed production access policy.
+See the [current status and TODO](09-status-and-next.md).
 
 ← [index](README.md)

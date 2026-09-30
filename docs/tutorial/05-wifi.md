@@ -1,62 +1,64 @@
-# 5 — Wi-Fi
+# 5 — Wi-Fi: modem WLAN domain and guarded startup
 
-## The theory that was wrong, and the one that worked
+Wi-Fi scanning, WPA2 association, DHCP, router/internet access, DNS and SSH over Wi-Fi
+have passed, including automatic startup after reboot. This uses owner stock assets
+and native compatibility fixes, not just a single Android daemon command.
 
-Obvious guess: WLAN firmware is in the ADSP protection domain → PIL-boot the ADSP. We
-did. Still no `wlan0`. The stock manifests say why: WLAN is a **modem** protection domain
-(`MODEMUW.JSN` → `wlan_pd`, service `wlan/fw`), not ADSP. Red herring, gone.
+## Required pieces
 
-What works: don't hand-vote subsystems — run Qualcomm's own **`cnss-daemon`** (from your
-stock image) in a restricted **RAM chroot**. It does the native QMI handshake, brings up
-the WLAN PD, and `wlan0` + `p2p0` show up. Needs device-specific firmware + libs you pull
-from your stock image; not in this repo.
+WLAN belongs to the modem protection domain (`modemuw.jsn`, service `wlan/fw`).
+ADSP-only boot did not create `wlan0`. The successful chain combines:
 
-## Bring it up
+1. Matching owner modem/MBA/WLAN firmware and manifests, hash-checked privately.
+2. RMTFS with Monterey relative shared-buffer offsets and read-only NV backing;
+   attempted writes use RAM shadows.
+3. Native protection-domain mapper and TFTP server, including MSM IPC compatibility
+   and TFTP buffer/acknowledgement fixes.
+4. Stock `cnss-daemon` and matching Bionic/vndk runtime in a restricted RAM root.
+5. A retained modem vote and the normal WLAN driver, then supplicant and DHCP.
 
-**1. Stage your blobs** (from stage 1 / a rooted stock read): the WLAN firmware, the
-`cnss-daemon` binary, and stock `vndk-29` + `vndk-sp-29` libs. Keep them private
-(`0700`; the package uses `/usr/share/oculus-wifi/firmware`).
+The canonical implementation is [runtime/oculus-wifi](../../runtime/oculus-wifi);
+[package instructions](../../packages/oculus-wifi-monterey/README.md) define the
+prerequisites. It mounts stock code read-only, gives the helper RAM `/data`, and
+binds only null/random/urandom character devices. No writable NV/factory partitions
+or block devices enter that helper root. `/run` is `nodev`, so creating device nodes
+there does not substitute for the binds.
 
-**2. Restricted chroot.** Gotcha: `/run` is `nodev`, so you can't `mknod` inside it —
-**bind-mount only** `/dev/null`, `/dev/random`, `/dev/urandom` from the host. No block
-devices, no persist. (`tools/wifi/` + `prepare-cnss-root.sh` in the private workdir.)
+## Installation boundary
 
-**3. Run it:**
+Build `oculus-wifi-monterey` and its patched dependencies using the supplied package
+recipes. Device stock-runtime and IPC-policy helpers must already be installed.
+Place the matching owner files plus `SHA256SUMS` under
+`/usr/share/oculus-wifi/firmware`, according to the runtime's expected filenames.
+Firmware extraction is not yet a complete generic tutorial command; consult the
+[detailed bring-up record](../adsp-wifi.md) and inspect the runtime before staging.
+Do not substitute another unit's NV/calibration or a random modem firmware set.
+
+A private 0600 `/etc/wpa_supplicant/wpa_supplicant-wlan0.conf` supplies the network
+profile. Keep credentials out of Git and console logs. On a **fresh guarded boot**,
+the package requires startup before uptime 150 seconds and checks the legacy recovery
+processes. The recovery service adopts their timers later. Do not bypass preflight
+checks to force a late start, or start duplicate daemon instances manually.
+
+After a successful manual packaged boot, enable the OpenRC `oculus-wifi` service in
+`default`. The owner's validated boot reached association around 90–120 seconds.
+
+## Verify
 
 ```
-nohup chroot /run/quest-cnss-root /apex/com.android.runtime/bin/linker64 \
-      /vendor/bin/cnss-daemon -n -dd &
-# watch for: ICNSS FW_READY, DRIVER_PROBED  →  wlan0 + p2p0
+rc-service oculus-wifi status
+cat /run/oculus-wifi/status
+iw dev wlan0 link
+ip addr show wlan0
+ping -I wlan0 -c 2 1.1.1.1
 ```
 
-**4. Associate:**
+Also test DNS and SSH at the assigned Wi-Fi address, then verify startup after a
+normal reboot without manual intervention. Preserve USB recovery while doing so.
+The service saves a stable locally administered MAC in `/etc/oculus-wifi/mac-address`;
+this is not a recovered factory MAC or a guarantee of global uniqueness.
 
-```
-iw dev wlan0 scan | grep SSID
-# PSK in /etc/wpa_supplicant/wpa_supplicant-wlan0.conf (0600, keep it out of git/logs)
-wpa_supplicant -B -s -i wlan0 -c /etc/wpa_supplicant/wpa_supplicant-wlan0.conf
-udhcpc -i wlan0
-```
+Do not stop/restart Wi-Fi in place: the modem vote is retained until reboot. Inspect
+`/run/oculus-wifi` logs for firmware, RMTFS, mapper, TFTP and CNSS failures.
 
-**5. Automatic on boot:** install `oculus-wifi-monterey` (OpenRC service `oculus-wifi`,
-`default` runlevel). Cold boot associates on its own, ~90s–2min for cnss-daemon.
-
-## Worked when
-
-- `iw dev wlan0 link` shows association, `ip addr show wlan0` has a lease
-- `ping -I wlan0 1.1.1.1` replies, DNS resolves
-- after a cold boot with **no** manual commands, `ssh root@<wlan0 IP>` works
-
-## Snags
-
-- **cnss-daemon exits instantly:** the `/dev` nodes — *bind-mount* null/random/urandom,
-  don't `mknod` (`/run` is `nodev`). Also stage the vndk-29 libs.
-- **no wlan0:** missing/mis-pathed firmware — check the `-dd` log for the firmware load.
-- Don't stop/restart the daemon in place — it holds an open modem FD that's only released
-  at the next recovery reboot.
-- No factory MAC recovered → driver uses a locally-administered one. Fine, just not
-  globally unique.
-
-Detail: `../adsp-wifi.md` (full journey + exact chroot setup + evidence).
-
-→ [6 — display / tracking / optics](06-headset-extensions.md)
+[Next: native VR scene](06-headset-extensions.md)

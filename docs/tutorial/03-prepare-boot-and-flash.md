@@ -7,10 +7,18 @@ The non-turnkey stage. A clean `boot.img` won't boot as-is, for two device reaso
    root not found by UUID. Fix: mount by device name instead —
    `pmos_root=/dev/mapper/oculus-pmos-root`. (Not baked into the port initramfs yet;
    that's the "cleaner fix" still open, so you do it by hand here.)
-2. **Boot signature.** The image needs a valid `BootSignature`, grafted from *your own*
+2. **Legacy boot footer.** The tested unlocked boot path needs a `BootSignature` page, grafted from *your own*
    stock `boot_b` (stage 1). That's why the backup wasn't optional.
 
-`prepare-monterey-boot` (in `tools/`) does the graft; you supply the device-name cmdline.
+**Reproduction blocker:** `prepare-monterey-boot` is an external historical helper,
+not included in this repository. `tools/prepare-4k-boot.py` references it and hard-codes
+one developer's paths. Neither is currently a self-contained public installation step.
+Port/review that helper before following the historical commands below. Copying a
+legacy footer is not cryptographically signing changed payloads with Oculus keys.
+
+The cmdline must fit entirely in the first 512 bytes and preserve required boot/recovery
+arguments. A binary `grep` does not prove the bootloader sees the intended cmdline;
+parse the Android header and check the primary field and cleared extension.
 
 ## Finalize + flash
 
@@ -23,12 +31,17 @@ grep -a pmos_root <finalized-boot.img>        # → /dev/mapper/oculus-pmos-root
 `tools/prepare-4k-boot.py` is the reference for how the guarded image was assembled; see
 `../boot-bringup.md` §5A/§5B for the cmdline detail.
 
-Flash slot **B** (A stays stock):
+Flash slot **B** only after all image checks pass (A remains untouched):
 
 ```
 # device in fastboot: power off, Vol-Down+Power
 fastboot flash system_b <exported system_b image>
 fastboot flash boot_b   <finalized-boot.img>
+# inspect current-slot and slot B metadata; activate B only after verifying its images
+fastboot getvar current-slot
+fastboot getvar slot-unbootable:b
+fastboot getvar slot-retry-count:b
+fastboot set_active b
 fastboot reboot
 ```
 

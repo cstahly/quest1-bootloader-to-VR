@@ -25,29 +25,17 @@ The owner wants a **VR-only headset**, with no desktop mode. Xorg/labwc was a te
 
 ## Status (2026-09-30)
 
-**Working:**
-- Boots Nura/pmOS fully → OpenRC + **SSH** over USB (NCM, `172.16.42.1`)
-- **Display**: real framebuffer 2880×1600, Xorg fbdev, upright nested desktop
-- **Controllers**: both tracked as pointers, button input observed
-- **Head tracking (orientation)**: IMU gyro+accel fusion via a patched Monado driver;
-  wearer-confirmed directions/tilt; 22 tests pass
-- **Lens optics**: stock distortion mesh reverse-engineered; wearer-confirmed in a
-  standalone X11 diagnostic renderer
-- **Monado** (OpenXR runtime) building and installed
-- **Wi-Fi**: 2.4/5 GHz scans, WPA2 association, DHCP, router/internet ping and DNS
-  verified. Uses relative-offset RMTFS with read-only NV backing, native mapper
-  and TFTP, and the owner's stock CNSS helper in a RAM-only writable environment.
-  Packaged automatic startup and SSH over Wi-Fi are verified across reboot.
-  The five-minute recovery timer remains enabled during bring-up; see
-  [`docs/adsp-wifi.md`](docs/adsp-wifi.md).
+Boot/OpenRC, USB and Wi-Fi SSH, native framebuffer VR scene, lens correction,
+orientation tracking, trigger-renewable recovery/HUD, four monochrome camera feeds
+and head-aimed saved 3D drawing have been demonstrated. No desktop is intended.
 
-**Not yet working / WIP:**
-- GPU acceleration (software Lavapipe for now), audio, positional tracking, passthrough
-- Optics integration into the Monado runtime (correction currently lives only in the
-  standalone diagnostic renderer)
-- Performance — X11 diagnostic ~19.5 fps; direct framebuffer backend in validation. Corrected threaded submission path measures59.7fps renderer/59.8fps MDSS driver; wearer reports definitely better, but motion is still not fully smooth. See `renderer/fast/README.md`.
-- A fully clean-build **boot image** (the rootfs build is reproducible; the boot image
-  still needs manual device-name root mounting — see the boot doc)
+Physical positional tracking is still offline research, composite passthrough needs
+correction, and there is no finished native OpenXR compositor/home. Hardware GPU
+rendering, audio and production boot/recovery behavior remain unfinished.
+
+See the maintained [status, in-progress work and TODO](docs/tutorial/09-status-and-next.md)
+and [camera/playground chapter](docs/tutorial/10-cameras-and-playground.md). Older
+chronological notes contain superseded experiments and performance measurements.
 
 ## The finding that unblocked booting
 
@@ -98,16 +86,16 @@ None of these are committed (they're gitignored). Here's how to obtain or rebuil
 |---|---|
 | **pmOS rootfs + boot images** | Rebuild via pmbootstrap — see *Reproducing a booting rootfs* above and `docs/boot-bringup.md`. The exact proven-booting *guarded* images live only in local backups, not git. |
 | **`capture-imu`** (headset IMU reader) | Cross-compile `tools/tracking/capture-imu.c` for aarch64 (the headset has no compiler): `pmbootstrap chroot -r -- cc -O2 -static ...`. See `docs/basalt-positional-tracking.md`. |
-| **Basalt `libbasalt.so`** | Build the [mateosss/basalt](https://gitlab.freedesktop.org/mateosss/basalt) fork (implements Monado's VIT ABI); apply `patches/basalt/`. Build **float-only** (`use-double=false`). |
+| **Basalt `libbasalt.so`** | Build the [mateosss/basalt](https://gitlab.freedesktop.org/mateosss/basalt) fork (implements Monado's VIT ABI); apply accepted patches 0001/0003, not experimental 0002. Build **float-only** (`use-double=false`). |
 | **`replay-vit`** (offline VIO runner) | Compile `tools/tracking/replay-vit.cpp` against Basalt's `vit_interface.h`, link `libbasalt.so`. |
 | **Monado runtime** | Build the monado-oculus-monterey port with `patches/monado/`. |
-| **mesa-kgsl** | `packages/mesa-kgsl-monterey/` (pmbootstrap build). *Note:* GPU accel is a dead end on Adreno 540 — see `docs/KGSL-ACCELERATION.md`. |
+| **mesa-kgsl** | `packages/mesa-kgsl-monterey/` (pmbootstrap build). *Note:* hardware rendering remains unverified on Adreno 540 — see `docs/KGSL-ACCELERATION.md`. |
 
 **Cannot be redistributed (obtain from your own device):**
 - **Meta/Oculus proprietary blobs** — WLAN/ADSP firmware, camera + IMU factory calibration
   (`camera_calibration_v2.json`, `imu_calibration.json`), and the stock distortion mesh.
-  These are extracted from *your own headset's* stock system image via the on-device
-  calibration store; they are device-specific and Meta's IP.
+  Stock code/firmware and private per-unit calibration come from different owner
+  partitions; see the tutorial's backup and camera chapters.
 - **Stock partition backups** (`boot_b.img`, `system_b.img`, NV, etc.) — your own device
   dumps, kept in local backups. Required for recovery; device-specific.
 
