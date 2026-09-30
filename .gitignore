@@ -1,0 +1,62 @@
+# --- Secrets: NEVER commit ---
+id_ed25519
+id_*
+*.pem
+*.key
+known_hosts
+authorized_keys
+*ssh_host*
+
+# --- Binaries / images / archives (regenerable or evidence, keep out of git) ---
+*.img
+*.sparse.img
+*.raw
+*.tar
+*.tar.gz
+*.tgz
+*.apk
+*.zip
+*.gz
+
+# --- Logs and raw captures (evidence lives in the workspace/backups, not here) ---
+*.log
+*.log.gz
+
+# --- Compiled artifacts ---
+*.o
+*.out
+monterey-head-mesh
+monterey-head-mesh-fast
+monterey-head-fov
+monterey-head-tracking
+test-lens-mesh
+# keep sources; ignore extensionless ELF executables of the same name
+# (explicit names above; add more as needed)
+
+# --- Meta / Oculus proprietary blobs: do NOT redistribute ---
+*.bin
+distortion-mesh.bin
+xrs-hmdconfig*.bin
+*.mbn
+*.mdt
+*.JSN
+firmware/
+
+# --- Upstream trees / reference material (not ours to vendor) ---
+monado-source/
+monado-source.tar.gz
+extracted-pmos-logs/
+stock-firmware-manifests/
+stock-optics/
+
+# --- OS cruft ---
+.DS_Store
+
+# --- Upstream GPL kernel drivers (reference copies, belong in the kernel tree) ---
+adsp-loader.c
+icnss.c
+subsys-pil-tz.c
+subsystem_restart.c
+syncboss_spi.c
+syncboss_sysfs.c
+syncboss_protocol.h

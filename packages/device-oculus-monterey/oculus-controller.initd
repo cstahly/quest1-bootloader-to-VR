@@ -1,0 +1,44 @@
+#!/sbin/openrc-run
+# shellcheck shell=sh disable=SC2034
+
+name="Oculus Touch desktop input bridge"
+description="Keep SyncBoss active and expose paired Touch controls through uinput"
+command=/usr/sbin/oculus-controller-input
+command_background=true
+pidfile=/run/oculus-controller.pid
+output_log=/var/log/oculus-controller.log
+error_log=/var/log/oculus-controller.log
+retry="TERM/5/KILL/5"
+
+depend() {
+	need oculus-stock-runtime
+	after oculus-mdev
+}
+
+start_post() {
+	attempt=0
+	previous_ready=-1
+	while [ "$attempt" -lt 15 ]; do
+		ready=0
+		for name_file in /sys/class/input/event*/device/name; do
+			[ -r "$name_file" ] || continue
+			[ "$(cat "$name_file")" = "Oculus Touch desktop pointer" ] || continue
+			event=${name_file%/device/name}
+			udevadm test --action=add "$event" >/dev/null 2>&1 || true
+			if udevadm info --query=property --path="$event" 2>/dev/null | \
+			   grep -qx 'ID_INPUT_MOUSE=1'; then
+				ready=$((ready + 1))
+			fi
+		done
+		# Require the count to be stable for two scans. This handles a single
+		# paired controller without returning before the second device appears.
+		if [ "$ready" -gt 0 ] && [ "$ready" -eq "$previous_ready" ]; then
+			return 0
+		fi
+		previous_ready=$ready
+		attempt=$((attempt + 1))
+		sleep 1
+	done
+	ewarn "Touch devices are not ready after 15 seconds; the desktop will continue without them"
+	return 0
+}

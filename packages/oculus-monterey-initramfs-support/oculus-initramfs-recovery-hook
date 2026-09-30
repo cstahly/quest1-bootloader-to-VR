@@ -1,0 +1,91 @@
+#!/bin/busybox ash
+
+# Return a failed early boot to the Oculus bootloader instead of leaving an
+# unreachable battery-powered headset in initramfs forever. Override with
+# oculus.recovery_timeout=SECONDS on the kernel command line; zero disables it.
+timeout=300
+force_debug=false
+cmdline_path=${OCULUS_CMDLINE_PATH:-/proc/cmdline}
+pidfile=${OCULUS_WATCHDOG_PIDFILE:-/run/oculus-initramfs-watchdog.pid}
+kmsg=${OCULUS_KMSG_PATH:-/dev/kmsg}
+for argument in $(cat "$cmdline_path"); do
+	case "$argument" in
+	oculus.recovery_timeout=*)
+		timeout=${argument#*=}
+		;;
+	oculus.force-debug)
+		force_debug=true
+		;;
+	esac
+done
+
+case "$timeout" in
+0)
+	echo "Monterey initramfs recovery watchdog disabled" >"$kmsg"
+	exit 0
+	;;
+''|*[!0-9]*)
+	echo "Invalid oculus.recovery_timeout; using 300 seconds" >"$kmsg"
+	timeout=300
+	;;
+esac
+
+if [ "$timeout" -lt 30 ] || [ "$timeout" -gt 1800 ]; then
+	echo "oculus.recovery_timeout must be 30-1800; using 300 seconds" >"$kmsg"
+	timeout=300
+fi
+
+if [ -r "$pidfile" ]; then
+	previous_pid=$(cat "$pidfile")
+	case "$previous_pid" in
+	''|*[!0-9]*) ;;
+	*)
+		if kill -0 "$previous_pid" 2>/dev/null; then
+			echo "Monterey initramfs recovery watchdog already armed" >"$kmsg"
+			exit 0
+		fi
+		;;
+	esac
+	rm -f "$pidfile"
+fi
+
+# Create correctly addressed pmOS boot/root mappings before the generic
+# initramfs code attempts its loop-device path. Failure remains recoverable:
+# the watchdog and optional USB shell below still come up.
+mapper=${OCULUS_SUBPARTITION_MAPPER:-/sbin/oculus-map-pmos-subpartitions}
+if [ -x "$mapper" ] && ! "$mapper"; then
+	echo "Monterey subpartition mapping failed; recovery remains active" >"$kmsg"
+fi
+
+(
+	sleep "$timeout"
+	echo "Monterey initramfs timeout; returning to bootloader" >"$kmsg"
+	sync
+	/usr/sbin/reboot-mode bootloader
+) &
+echo "$!" >"$pidfile"
+echo "Monterey initramfs recovery watchdog: ${timeout}s" >"$kmsg"
+
+# ADDED: reliable USB-net root shell. Start nc ONLY after 172.16.42.1 exists,
+# in the background so the initramfs keeps booting (unlike force-debug which
+# bound before net and blocked). Always on for bring-up debugging.
+(
+	i=0
+	while [ "$i" -lt 180 ]; do
+		ip addr 2>/dev/null | grep -q "172.16.42.1" && break
+		sleep 1; i=$((i+1))
+	done
+	nc -lk -s 172.16.42.1 -p 2323 -e /sbin/oculus-debug-login
+) &
+echo "Monterey: background net root shell armed on :2323" >"$kmsg"
+
+if [ "$force_debug" = true ]; then
+	echo "Monterey forced NCM debug shell before storage discovery" >"$kmsg"
+	# BusyBox telnetd's login/PTY path closes immediately on this downstream
+	# kernel. nc -lk keeps a persistent USB-only listener and directly executes
+	# the argument-discarding debug wrapper for each connection.
+	nc -lk -s 172.16.42.1 -p 23 -e /sbin/oculus-debug-login &
+	while :; do
+		sleep 5
+	done
+fi

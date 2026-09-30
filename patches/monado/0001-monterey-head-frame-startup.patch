@@ -1,0 +1,385 @@
+--- a/tests/tests_monterey_protocol.cpp
++++ b/tests/tests_monterey_protocol.cpp
+@@ -6,12 +6,19 @@
+ #include "monterey_protocol.h"
+ #include "monterey_interface.h"
+ #include "xrt/xrt_device.h"
++#include "math/m_api.h"
++#include <limits>
+ 
+ #include <array>
+ #include <cstdint>
+ #include <cstring>
+ #include <fcntl.h>
+ #include <unistd.h>
++#include <sys/stat.h>
++#include <sys/wait.h>
++#include "os/os_time.h"
++#include "math/m_imu_3dof.h"
++#include "math/m_predict.h"
+ 
+ static void
+ put_le32(uint8_t *data, uint32_t value)
+@@ -89,14 +96,36 @@
+ 	int command_fd = mkstemp(command_path);
+ 	REQUIRE(stream_fd >= 0);
+ 	REQUIRE(command_fd >= 0);
+-	REQUIRE(write(stream_fd, record.data(), record.size()) == static_cast<ssize_t>(record.size()));
+ 	close(stream_fd);
+ 	close(command_fd);
++	REQUIRE(unlink(stream_path) == 0);
++	REQUIRE(mkfifo(stream_path, 0600) == 0);
++	pid_t producer = fork();
++	REQUIRE(producer >= 0);
++	if (producer == 0) {
++		int fd = open(stream_path, O_WRONLY);
++		if (fd < 0) _exit(1);
++		for (int i = 0; i < 1000; i++) {
++			if (write(fd, record.data(), record.size()) != static_cast<ssize_t>(record.size())) _exit(2);
++			usleep(1000);
++		}
++		close(fd); _exit(0);
++	}
+ 
+ 	struct xrt_device *hmd = monterey_device_create(stream_path, command_path);
+ 	REQUIRE(hmd != nullptr);
+ 	CHECK(hmd->supported.orientation_tracking);
+ 	CHECK_FALSE(hmd->supported.position_tracking);
++	xrt_space_relation pose{};
++	hmd->get_tracked_pose(hmd, XRT_INPUT_GENERIC_HEAD_POSE, os_monotonic_get_ns(), &pose);
++	CHECK((pose.relation_flags & XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT) != 0);
++	int producer_status = 0;
++	REQUIRE(waitpid(producer, &producer_status, 0) == producer);
++	CHECK(WIFEXITED(producer_status));
++	CHECK(WEXITSTATUS(producer_status) == 0);
++	usleep(150000);
++	hmd->get_tracked_pose(hmd, XRT_INPUT_GENERIC_HEAD_POSE, os_monotonic_get_ns(), &pose);
++	CHECK(pose.relation_flags == 0);
+ 	xrt_device_destroy(&hmd);
+ 	CHECK(hmd == nullptr);
+ 
+@@ -110,3 +139,103 @@
+ 	unlink(stream_path);
+ 	unlink(command_path);
+ }
++
++TEST_CASE("Monterey initial up is correct for tilted and inverted starts")
++{
++	const std::array<xrt_vec3, 5> samples{{
++	    {0, 9.80665f, 0}, {-9.80665f, 0, 0}, {0, -9.80665f, 0},
++	    {0, 0, 9.80665f}, {5.66187f, 5.66187f, 5.66187f}}};
++	for (const auto &accel : samples) {
++		xrt_quat q{};
++		REQUIRE(monterey_imu_start_orientation(&accel, &q));
++		xrt_vec3 world{};
++		math_quat_rotate_vec3(&q, &accel, &world);
++		CHECK(world.x == Catch::Approx(0).margin(0.001f));
++		CHECK(world.y == Catch::Approx(9.80665f).margin(0.001f));
++		CHECK(world.z == Catch::Approx(0).margin(0.001f));
++	}
++}
++
++TEST_CASE("Monterey startup rejects invalid gravity")
++{
++	const std::array<xrt_vec3, 4> samples{{
++	    {0, 0, 0}, {0, 20, 0}, {std::numeric_limits<float>::quiet_NaN(), 9.8f, 0},
++	    {0, std::numeric_limits<float>::infinity(), 0}}};
++	for (const auto &accel : samples) {
++		xrt_quat q{};
++		CHECK_FALSE(monterey_imu_start_orientation(&accel, &q));
++	}
++}
++
++TEST_CASE("Monterey measured sensor mounting maps pitch yaw and roll")
++{
++	const auto pitch = monterey_sensor_to_head({0, -1, 0});
++	const auto yaw = monterey_sensor_to_head({-1, 0, 0});
++	const auto roll = monterey_sensor_to_head({0, 0, -1});
++	CHECK(pitch.x == 1); CHECK(pitch.y == 0); CHECK(pitch.z == 0);
++	CHECK(yaw.x == 0); CHECK(yaw.y == 1); CHECK(yaw.z == 0);
++	CHECK(roll.x == 0); CHECK(roll.y == 0); CHECK(roll.z == 1);
++	const auto flat = monterey_sensor_to_head({-9.851389f, 0.022999f, 0.744476f});
++	CHECK(flat.y > 9.8f);
++	const auto front_up = monterey_sensor_to_head({-7.74027f, 0.18207f, 6.07913f});
++	CHECK(front_up.z < -6.0f);
++}
++
++TEST_CASE("Monterey stationary startup estimates bias before publishing orientation")
++{
++	monterey_imu_calibration cal{};
++	const xrt_vec3 a{-0.022999f, 9.851389f, -0.744476f};
++	const xrt_vec3 g{0.006936f, -0.012934f, -0.003589f};
++	for (int i = 0; i <= 750; i++) {
++		bool ready = monterey_imu_calibrate(&cal, i*1000000LL, &a, &g);
++		CHECK(ready == (i == 750));
++	}
++	CHECK(cal.gyro_bias.x == Catch::Approx(g.x));
++	CHECK(cal.gyro_bias.y == Catch::Approx(g.y));
++	CHECK(cal.gyro_bias.z == Catch::Approx(g.z));
++	m_imu_3dof fusion{};
++	m_imu_3dof_init(&fusion, M_IMU_3DOF_USE_GRAVITY_DUR_20MS);
++	fusion.rot = cal.orientation;
++	fusion.gyro_bias.value = cal.gyro_bias;
++	for (int i = 0; i < 5000; i++) m_imu_3dof_update(&fusion, i*1000000LL, &a, &g);
++	float dot = fusion.rot.x*cal.orientation.x + fusion.rot.y*cal.orientation.y +
++	            fusion.rot.z*cal.orientation.z + fusion.rot.w*cal.orientation.w;
++	CHECK(dot == Catch::Approx(1).margin(0.00001f));
++	m_imu_3dof_close(&fusion);
++}
++
++TEST_CASE("Monterey startup waits through motion and rejects noisy calibration")
++{
++	monterey_imu_calibration cal{};
++	const xrt_vec3 a{0, 9.80665f, 0}, moving{0, 0.3f, 0}, still{0, 0, 0};
++	for (int i = 0; i < 1000; i++) CHECK_FALSE(monterey_imu_calibrate(&cal, i*1000000LL, &a, &moving));
++	CHECK(cal.count == 0);
++	for (int i = 1000; i < 1750; i++) CHECK_FALSE(monterey_imu_calibrate(&cal, i*1000000LL, &a, &still));
++	CHECK(monterey_imu_calibrate(&cal, 1750000000LL, &a, &still));
++	cal = {};
++	for (int i = 0; i <= 750; i++) {
++		xrt_vec3 noisy{(i%2)?0.04f:-0.04f, 0, 0};
++		CHECK_FALSE(monterey_imu_calibrate(&cal, i*1000000LL, &a, &noisy));
++	}
++	CHECK_FALSE(cal.ready);
++}
++
++TEST_CASE("Monterey prediction respects head-local rotation after a yaw turn")
++{
++	const xrt_vec3 up{0,1,0}, gyro{1.01f,0,0}, bias{0.01f,0,0}, body{1,0,0};
++	xrt_space_relation relation{};
++	math_quat_from_angle_vector(1.57079632679f, &up, &relation.pose.orientation);
++	monterey_imu_world_angular_velocity(&relation.pose.orientation, &gyro, &bias, &relation.angular_velocity);
++	CHECK(relation.angular_velocity.x == Catch::Approx(0).margin(0.00001f));
++	CHECK(relation.angular_velocity.z == Catch::Approx(-1).margin(0.00001f));
++	relation.relation_flags = static_cast<xrt_space_relation_flags>(
++	    XRT_SPACE_RELATION_ORIENTATION_VALID_BIT | XRT_SPACE_RELATION_ANGULAR_VELOCITY_VALID_BIT);
++	xrt_space_relation predicted{};
++	m_predict_relation(&relation, 0.02, &predicted);
++	xrt_quat expected{};
++	math_quat_integrate_velocity(&relation.pose.orientation, &body, 0.02f, &expected);
++	CHECK(predicted.pose.orientation.x == Catch::Approx(expected.x).margin(0.00001f));
++	CHECK(predicted.pose.orientation.y == Catch::Approx(expected.y).margin(0.00001f));
++	CHECK(predicted.pose.orientation.z == Catch::Approx(expected.z).margin(0.00001f));
++	CHECK(predicted.pose.orientation.w == Catch::Approx(expected.w).margin(0.00001f));
++}
+--- a/src/xrt/drivers/monterey/monterey_device.c
++++ b/src/xrt/drivers/monterey/monterey_device.c
+@@ -32,7 +32,7 @@
+ 
+ #define MONTEREY_RECORD_SIZE 255
+ #define MONTEREY_POLL_TIMEOUT_MS 250
+-#define MONTEREY_STARTUP_TIMEOUT_NS (2 * U_TIME_1S_IN_NS)
++#define MONTEREY_STARTUP_TIMEOUT_NS (10 * U_TIME_1S_IN_NS)
+ 
+ /* Exact zero-payload commands used by v50 libsyncboss for HMD IMU only. */
+ static const uint8_t imu_enable_command[3] = {0x6e, 0x00, 0x00};
+@@ -50,6 +50,8 @@
+ 	struct os_thread_helper thread;
+ 	struct os_mutex fusion_mutex;
+ 	struct m_imu_3dof fusion;
++	struct monterey_imu_calibration calibration;
++	int64_t last_received_ns;
+ 	struct xrt_space_relation last_relation;
+ 	int64_t last_update_ns;
+ 	uint64_t last_device_timestamp;
+@@ -101,14 +103,35 @@
+ 		return false;
+ 	}
+ 
+-	/* Device timestamp units still need capture validation. Host monotonic time
+-	 * is intentionally used for fusion until that mapping is proven. */
++	/* Keep host monotonic time until device timestamp units are verified. */
+ 	const int64_t now_ns = os_monotonic_get_ns();
++	sample.acceleration_m_s2 = monterey_sensor_to_head(sample.acceleration_m_s2);
++	sample.angular_velocity_rad_s = monterey_sensor_to_head(sample.angular_velocity_rad_s);
+ 	os_mutex_lock(&d->fusion_mutex);
++	if (d->last_received_ns && now_ns-d->last_received_ns > U_TIME_1S_IN_NS/10) {
++		/* Do not integrate a new sample over a long sensor outage. */
++		memset(&d->calibration, 0, sizeof(d->calibration));
++		d->sample_count = 0;
++		m_imu_3dof_close(&d->fusion);
++		m_imu_3dof_init(&d->fusion, M_IMU_3DOF_USE_GRAVITY_DUR_20MS);
++	}
++	d->last_received_ns = now_ns;
++	if (!d->calibration.ready) {
++		if (!monterey_imu_calibrate(&d->calibration, now_ns, &sample.acceleration_m_s2,
++		                          &sample.angular_velocity_rad_s)) {
++			os_mutex_unlock(&d->fusion_mutex);
++			return false;
++		}
++		d->fusion.rot = d->calibration.orientation;
++		d->fusion.gyro_bias.value = d->calibration.gyro_bias;
++		MONTEREY_INFO(d, "Gravity initialized; stationary gyro bias %.6f %.6f %.6f rad/s",
++		              d->calibration.gyro_bias.x, d->calibration.gyro_bias.y, d->calibration.gyro_bias.z);
++	}
+ 	m_imu_3dof_update(&d->fusion, now_ns, &sample.acceleration_m_s2, &sample.angular_velocity_rad_s);
+ 	U_ZERO(&d->last_relation);
+ 	d->last_relation.pose.orientation = d->fusion.rot;
+-	d->last_relation.angular_velocity = sample.angular_velocity_rad_s;
++	monterey_imu_world_angular_velocity(&d->fusion.rot, &sample.angular_velocity_rad_s,
++	                                   &d->calibration.gyro_bias, &d->last_relation.angular_velocity);
+ 	d->last_relation.relation_flags = (enum xrt_space_relation_flags)(
+ 	    XRT_SPACE_RELATION_ORIENTATION_VALID_BIT | XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT |
+ 	    XRT_SPACE_RELATION_ANGULAR_VELOCITY_VALID_BIT);
+@@ -150,7 +173,7 @@
+ 	}
+ 
+ 	os_mutex_lock(&d->fusion_mutex);
+-	if (d->sample_count == 0) {
++	if (d->sample_count == 0 || os_monotonic_get_ns() - d->last_update_ns > U_TIME_1S_IN_NS / 10) {
+ 		U_ZERO(out_relation);
+ 	} else if (at_timestamp_ns > d->last_update_ns) {
+ 		double seconds = time_ns_to_s(at_timestamp_ns - d->last_update_ns);
+@@ -264,7 +287,7 @@
+ 	while (os_monotonic_get_ns() < deadline_ns && !read_and_update(d, MONTEREY_POLL_TIMEOUT_MS)) {
+ 	}
+ 	if (d->sample_count == 0) {
+-		MONTEREY_ERROR(d, "No valid v50 HMD IMU packet arrived during startup");
++		MONTEREY_ERROR(d, "No stable HMD IMU window during startup; hold headset still and retry");
+ 		goto fail;
+ 	}
+ 
+--- a/src/xrt/drivers/monterey/monterey_protocol.h
++++ b/src/xrt/drivers/monterey/monterey_protocol.h
+@@ -4,6 +4,7 @@
+ 
+ #include "xrt/xrt_defines.h"
+ 
++#include <stdbool.h>
+ #include <stddef.h>
+ #include <stdint.h>
+ 
+@@ -30,6 +31,31 @@
+ enum monterey_parse_result
+ monterey_syncboss_parse_imu_record(const uint8_t *record, size_t length, struct monterey_imu_sample *out_sample);
+ 
++/* Right-handed sensor-to-head mounting transform, observed on Quest 1. */
++struct xrt_vec3 monterey_sensor_to_head(struct xrt_vec3 sensor);
++
++struct monterey_imu_calibration {
++	int64_t start_ns;
++	uint32_t count;
++	double acceleration_sum[3], acceleration_square_sum[3];
++	double gyro_sum[3], gyro_square_sum[3];
++	struct xrt_quat orientation;
++	struct xrt_vec3 gyro_bias;
++	bool ready;
++};
++/* Requires a continuous 0.75-second stationary window; never changes firmware. */
++bool monterey_imu_calibrate(struct monterey_imu_calibration *cal, int64_t now_ns,
++                           const struct xrt_vec3 *acceleration, const struct xrt_vec3 *gyro);
++
++void monterey_imu_world_angular_velocity(const struct xrt_quat *orientation,
++                                         const struct xrt_vec3 *gyro,
++                                         const struct xrt_vec3 *bias,
++                                         struct xrt_vec3 *world_velocity);
++
++/* Initialize world up from gravity; does not determine yaw or sensor mounting. */
++bool
++monterey_imu_start_orientation(const struct xrt_vec3 *acceleration, struct xrt_quat *orientation);
++
+ #ifdef __cplusplus
+ }
+ #endif
+--- a/src/xrt/drivers/monterey/monterey_protocol.c
++++ b/src/xrt/drivers/monterey/monterey_protocol.c
+@@ -4,6 +4,8 @@
+ #include "monterey_protocol.h"
+ 
+ #include <string.h>
++#include <math.h>
++#include "math/m_api.h"
+ 
+ #define SYNCBOSS_DRIVER_HEADER_VERSION_V1 1u
+ #define SYNCBOSS_DRIVER_HEADER_SIZE_V1 3u
+@@ -74,6 +76,10 @@
+ 			out_sample->angular_velocity_rad_s.x = read_le_float(payload + 20) * DEGREES_TO_RADIANS;
+ 			out_sample->angular_velocity_rad_s.y = read_le_float(payload + 24) * DEGREES_TO_RADIANS;
+ 			out_sample->angular_velocity_rad_s.z = read_le_float(payload + 28) * DEGREES_TO_RADIANS;
++			if (!math_vec3_validate(&out_sample->acceleration_m_s2) ||
++			    !math_vec3_validate(&out_sample->angular_velocity_rad_s)) {
++				return MONTEREY_PARSE_MALFORMED;
++			}
+ 			out_sample->metadata = read_le32(payload + 32);
+ 			return MONTEREY_PARSE_IMU;
+ 		}
+@@ -82,3 +88,79 @@
+ 
+ 	return offset == length ? MONTEREY_PARSE_NO_IMU : MONTEREY_PARSE_MALFORMED;
+ }
++
++/* Seed gravity alignment once instead of slewing from identity after startup. */
++bool
++monterey_imu_start_orientation(const struct xrt_vec3 *acceleration, struct xrt_quat *orientation)
++{
++	if (acceleration == NULL || orientation == NULL || !math_vec3_validate(acceleration)) {
++		return false;
++	}
++	const float norm = sqrtf(acceleration->x * acceleration->x + acceleration->y * acceleration->y +
++	                         acceleration->z * acceleration->z);
++	/* Reject zero/freefall and large linear acceleration during initialization. */
++	if (norm < 8.5f || norm > 11.0f) {
++		return false;
++	}
++	const struct xrt_vec3 up = {0, 1, 0};
++	math_quat_from_vec_a_to_vec_b(acceleration, &up, orientation);
++	return math_quat_ensure_normalized(orientation);
++}
++
++struct xrt_vec3
++monterey_sensor_to_head(struct xrt_vec3 sensor)
++{
++	/* Level: sensor -X is up. Front-edge-up tilt: sensor +Z grows, so head Z=-Z.
++	 * Right-handed completion gives head X=-Y; determinant is +1. */
++	return (struct xrt_vec3){-sensor.y, -sensor.x, -sensor.z};
++}
++
++bool
++monterey_imu_calibrate(struct monterey_imu_calibration *cal, int64_t now_ns,
++                      const struct xrt_vec3 *acceleration, const struct xrt_vec3 *gyro)
++{
++	if (cal->ready) return true;
++	const float a[3] = {acceleration->x, acceleration->y, acceleration->z};
++	const float g[3] = {gyro->x, gyro->y, gyro->z};
++	float a2 = 0, g2 = 0;
++	for (int i = 0; i < 3; i++) { a2 += a[i]*a[i]; g2 += g[i]*g[i]; }
++	if (!math_vec3_validate(acceleration) || !math_vec3_validate(gyro) ||
++	    a2 < 8.5f*8.5f || a2 > 11.0f*11.0f || g2 > 0.08f*0.08f ||
++	    (cal->count && now_ns < cal->start_ns)) {
++		memset(cal, 0, sizeof(*cal)); return false;
++	}
++	if (!cal->count) cal->start_ns = now_ns;
++	cal->count++;
++	for (int i = 0; i < 3; i++) {
++		cal->acceleration_sum[i] += a[i]; cal->acceleration_square_sum[i] += a[i]*a[i];
++		cal->gyro_sum[i] += g[i]; cal->gyro_square_sum[i] += g[i]*g[i];
++	}
++	if (now_ns-cal->start_ns < 750000000 || cal->count < 100) return false;
++	float average_a[3], average_g[3];
++	for (int i = 0; i < 3; i++) {
++		double am = cal->acceleration_sum[i]/cal->count, gm = cal->gyro_sum[i]/cal->count;
++		double av = cal->acceleration_square_sum[i]/cal->count-am*am;
++		double gv = cal->gyro_square_sum[i]/cal->count-gm*gm;
++		if (av > 0.01 || gv > 0.008*0.008) {
++			memset(cal, 0, sizeof(*cal)); return false;
++		}
++		average_a[i] = am; average_g[i] = gm;
++	}
++	const struct xrt_vec3 average = {average_a[0], average_a[1], average_a[2]};
++	if (!monterey_imu_start_orientation(&average, &cal->orientation)) {
++		memset(cal, 0, sizeof(*cal)); return false;
++	}
++	cal->gyro_bias = (struct xrt_vec3){average_g[0], average_g[1], average_g[2]};
++	cal->ready = true;
++	return true;
++}
++
++void
++monterey_imu_world_angular_velocity(const struct xrt_quat *orientation,
++                                   const struct xrt_vec3 *gyro, const struct xrt_vec3 *bias,
++                                   struct xrt_vec3 *world_velocity)
++{
++	const struct xrt_vec3 body_velocity = {gyro->x-bias->x, gyro->y-bias->y, gyro->z-bias->z};
++	/* xrt_space_relation stores angular velocity in the base/world frame. */
++	math_quat_rotate_derivative(orientation, &body_velocity, world_velocity);
++}

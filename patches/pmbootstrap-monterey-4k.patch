@@ -1,0 +1,18 @@
+diff --git a/pmb/install/format.py b/pmb/install/format.py
+index 1e6b329..63c026d 100644
+--- a/pmb/install/format.py
++++ b/pmb/install/format.py
+@@ -74,6 +74,13 @@ def format_partition_with_filesystem(
+     else:
+         raise RuntimeError("Filesystem " + filesystem + " is not supported!")
+ 
++    # Local Monterey bring-up fix: its UFS and dm-linear views are 4Kn.
++    # Small filesystem images otherwise default to unsupported 1 KiB blocks.
++    if get_context().config.device == "oculus-monterey" and filesystem in {"ext2", "ext4"}:
++        mkfs_args += ["-b", "4096"]
++        if filesystem == "ext4":
++            mkfs_args += ["-O", "^orphan_file,^metadata_csum,^metadata_csum_seed"]
++
+     # Format the partition with the selected filesystem
+     logging.info(f"(native) format {device} ({label}, {filesystem})")
+     pmb.chroot.root([*mkfs_args, device])

@@ -1,0 +1,135 @@
+# Reference: <https://postmarketos.org/devicepkg>
+maintainer="Jose Molina <josemo360@yahoo.com>"
+pkgname=device-oculus-monterey
+pkgver=1
+pkgrel=34
+pkgdesc="Oculus Quest 1"
+url="https://postmarketos.org"
+arch="aarch64"
+license="MIT"
+depends="
+	android-tools-mkbootimg
+	device-mapper
+	firmware-oculus-monterey
+	libqipcrtr4msmipc
+	linux-oculus-monterey
+	oculus-monterey-initramfs-support
+	postmarketos-base
+	postmarketos-base-downstream
+	rmtfs
+	sudo-rs
+	unudhcpd
+	"
+makedepends="
+	devicepkg-dev
+	linux-headers
+	"
+source="
+	deviceinfo
+	modules-initfs
+	oculus-mdev.initd
+	oculus-device-access.initd
+	oculus-controller
+	oculus-controller-input
+	oculus-controller-uinput.c
+	oculus-controller.initd
+	oculus-syncboss-dump.c
+	oculus-recovery.sudoers
+	oculus-refresh-rate
+	oculus-rmtfs
+	oculus-rmtfs.initd
+	oculus-stock-runtime
+	oculus-stock-runtime.initd
+	oculus-usb-recovery
+	oculus-usb-recovery.initd
+	oculus-usb-recovery.nmconf
+	90-oculus-monterey-access.rules
+	interfaces
+	"
+install="$pkgname.post-install $pkgname.post-upgrade"
+options="!archcheck !check"
+
+build() {
+	devicepkg_build $startdir $pkgname
+	$CC $CPPFLAGS $CFLAGS $LDFLAGS \
+		-o oculus-syncboss-dump "$srcdir/oculus-syncboss-dump.c"
+	$CC $CPPFLAGS $CFLAGS $LDFLAGS \
+		-o oculus-controller-uinput "$srcdir/oculus-controller-uinput.c" -lm
+}
+
+package() {
+	devicepkg_package $startdir $pkgname
+	install -Dm755 "$srcdir/oculus-refresh-rate" \
+		"$pkgdir/usr/sbin/oculus-refresh-rate"
+	install -Dm755 "$srcdir/oculus-controller" \
+		"$pkgdir/usr/sbin/oculus-controller"
+	install -Dm755 "$srcdir/oculus-controller-input" \
+		"$pkgdir/usr/sbin/oculus-controller-input"
+	install -Dm755 oculus-controller-uinput \
+		"$pkgdir/usr/sbin/oculus-controller-uinput"
+	install -Dm755 "$srcdir/oculus-controller.initd" \
+		"$pkgdir/etc/init.d/oculus-controller"
+	install -Dm755 oculus-syncboss-dump \
+		"$pkgdir/usr/sbin/oculus-syncboss-dump"
+	install -Dm755 "$srcdir/oculus-usb-recovery" \
+		"$pkgdir/usr/sbin/oculus-usb-recovery"
+	install -Dm755 "$srcdir/oculus-rmtfs" \
+		"$pkgdir/usr/sbin/oculus-rmtfs"
+	install -Dm755 "$srcdir/oculus-rmtfs.initd" \
+		"$pkgdir/etc/init.d/oculus-rmtfs"
+	install -Dm755 "$srcdir/oculus-stock-runtime" \
+		"$pkgdir/usr/sbin/oculus-stock-runtime"
+	install -Dm755 "$srcdir/oculus-stock-runtime.initd" \
+		"$pkgdir/etc/init.d/oculus-stock-runtime"
+	install -Dm755 "$srcdir/oculus-usb-recovery.initd" \
+		"$pkgdir/etc/init.d/oculus-usb-recovery"
+	install -Dm755 "$srcdir/oculus-mdev.initd" \
+		"$pkgdir/etc/init.d/oculus-mdev"
+	install -Dm755 "$srcdir/oculus-device-access.initd" \
+		"$pkgdir/etc/init.d/oculus-device-access"
+	install -Dm644 "$srcdir/oculus-usb-recovery.nmconf" \
+		"$pkgdir/etc/NetworkManager/conf.d/20-oculus-usb-recovery.conf"
+	install -Dm644 "$srcdir/90-oculus-monterey-access.rules" \
+		"$pkgdir/usr/lib/udev/rules.d/90-oculus-monterey-access.rules"
+	install -Dm440 "$srcdir/oculus-recovery.sudoers" \
+		"$pkgdir/etc/sudoers.d/oculus-recovery"
+	install -Dm644 "$srcdir/interfaces" \
+		"$pkgdir/etc/network/interfaces"
+	mkdir -p "$pkgdir/etc/runlevels/default"
+	ln -s /etc/init.d/oculus-rmtfs \
+		"$pkgdir/etc/runlevels/default/oculus-rmtfs"
+	ln -s /etc/init.d/oculus-usb-recovery \
+		"$pkgdir/etc/runlevels/default/oculus-usb-recovery"
+	ln -s /etc/init.d/oculus-controller \
+		"$pkgdir/etc/runlevels/default/oculus-controller"
+	ln -s /etc/init.d/oculus-stock-runtime \
+		"$pkgdir/etc/runlevels/default/oculus-stock-runtime"
+	mkdir -p "$pkgdir/etc/runlevels/sysinit"
+	ln -s /etc/init.d/oculus-mdev \
+		"$pkgdir/etc/runlevels/sysinit/oculus-mdev"
+	ln -s /etc/init.d/oculus-device-access \
+		"$pkgdir/etc/runlevels/sysinit/oculus-device-access"
+}
+
+sha512sums="
+8e6c2391a6de87b61c4fda5112828bb767c1e9ccb3dcc86a3696136efa1023a55a7c48f23fea7948e1c830a537a0bcc71e5af807e147cc39ecabf047699705aa  deviceinfo
+986e70b829f868a32250ad39a64fa42918e38ca9ec7d9a62199a402ddda7df17002ac1be8613062d453cdfad382ee404b484ee0fc91a5cbe3c9d9710212880a9  modules-initfs
+1ba201c6130f5ecba51628f93ca0d1bf4cfdd8784845c938e2fc10b633331969e5683056871d703692586f759ba1dbc7d515b2aa73711e200e8a558c141c1a84  oculus-mdev.initd
+557a90defecb06e3a2e87c68bb3c13037855e1540c07ea776b8aa762da1e02ee866dde3d8013be301d127046a8467762851b1f067c7a54bffd6310831f893e62  oculus-device-access.initd
+db258ce2027ceb5b466f537a68582b8f3600ade2f102ef26d4d1295c15acccc6c02a01c5b8e27e8e375858fca9a90a3b36191057a1353bde033c0c296a89872c  oculus-controller
+53ffb356b5a2abaaadde4531ed5f8b10966f5edce5f307ed0d2ccb646e8a45bb8d75a460bb48a4d6bdd67cd2d44b51fa3fb0632649fc957fa85738e88da4f06c  oculus-controller-input
+d2941a6aaa62d2cb50c6074a37508801cc48ccbf6b50ed67c35d8493dc0f31e7870a57d2380bd2cc9a4a9c6dfd6805ca5fc8aaec8897416e9911da4fe8995be9  oculus-controller-uinput.c
+59b2e27b4b44a2455a4244e47c23a9ec21c557757081f0a73abfdd04777bd973d2e8f7f23bb7884f18177945456c5269a188a15616a4808842043451873c81cf  oculus-controller.initd
+544be24f4a82e7a6bef8adf216884e00e598dcfdbf2bc2a179758f5a8396861e6ebdb542a7a529ce7c9c058281b7d2ec60aeb644cce91938ba7cc1feba22e1ed  oculus-syncboss-dump.c
+1819b4b91373e567200b73d32604e0bd3b658731ecae74ca886137d85d1b7f6d81e0f951461b70f1b560a86fd95dafb0a4e03a7837079fbcb2b812e30f36e96b  oculus-recovery.sudoers
+03649b9cb60f549d052c910057b5472f5285cd8371fa83404e106e4c2f16acc3157364c631378889a2e47acd654adfeca83312c66f8b19eed7468a33819fe4f6  oculus-refresh-rate
+eb9eee046d038b264f99f155e284f587fd3f7df3aa9c6e8c254d82382b9d631adaf886f590470e4ec2c61feb114b306fac11a9e89f2e867c9c88e39d8a874732  oculus-rmtfs
+3c6148b7679b6f13c5d26354ce99b0327dc6b0bab7add4922488086dc661529a6662034d66e41ed57d8bbc617f1ad8ed35958f29289281b68649b369e4821727  oculus-rmtfs.initd
+6f43286040486bc3173c5bc03370288f8a7a5e3a70416fdbb74b5a7cb023940f54c80d250b66dd45f64c76631c828c5ab8ebb46993c8764260a99bd11f0f1872  oculus-stock-runtime
+3322d260e8c11e3dcb52723c42c55cd6508035ab7365a18442c02d7e4b271050f4be7360e71e0aae285ab9896ee6a07105ad46151c12bc1d1672e2793db0781c  oculus-stock-runtime.initd
+f7bd069f1b0c5d87c39331040f0b50366b84a4ee3a54013b7b86595708221f3e581079c2037e68047a8c7fe70ad11080111baa82bb292bde593c0774d52ddfd4  oculus-usb-recovery
+0004d214163e59781ea67f185605eb5538440ac47bfdeb6ca8ca050545382f590233516d80d0b7a9b69d6042b3f2d034687b285c82a218185377063a63faec2e  oculus-usb-recovery.initd
+3e1a2337366ac3cc8143ef60012e148b16b05757798686d07d2059f68fa99c58c6a2532b0ef6898354ed1997979a7334c265b74468a5dc28a6528157dae4c79a  oculus-usb-recovery.nmconf
+fc0daa4ace5bd502fe7911228fcc678be9badde59016b795810315a4530852e7215a20f1b2e4f290d5cb31958c7b9c324652e23fd70cb578c8fad13db7d81390  90-oculus-monterey-access.rules
+1030fa3fee449ee8f3709d6c83839a2a7724b4e9e1235134887c4c185b0c64c0f0e2c5462fba495858a20b3f245b771d3a69043436ef099391ec87de26d79540  interfaces
+"

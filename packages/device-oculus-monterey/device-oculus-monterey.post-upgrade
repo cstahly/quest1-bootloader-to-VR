@@ -1,0 +1,6 @@
+#!/bin/sh
+# unudhcpd auto-enables unudhcpd.usb0 (172.16.41.1) which competes with this
+# port's oculus-usb-recovery (172.16.42.1). Remove it so USB SSH is reliable.
+rc-update del unudhcpd.usb0 boot 2>/dev/null || true
+rm -f /etc/runlevels/boot/unudhcpd.usb0
+exit 0

@@ -1,0 +1,39 @@
+# Reference: <https://postmarketos.org/devicepkg>
+maintainer="Jose Molina <josemo360@yahoo.com>"
+pkgname=oculus-monterey-initramfs-support
+pkgver=1
+pkgrel=0
+pkgdesc="Oculus Quest 1 initramfs recovery and subpartition helpers"
+url="https://postmarketos.org"
+arch="aarch64"
+license="MIT"
+depends="reboot-mode"
+source="
+	oculus-initramfs-debug-login
+	oculus-map-pmos-subpartitions
+	oculus-initramfs-recovery-cleanup
+	oculus-initramfs-recovery-hook
+	oculus-initramfs-recovery.files
+	"
+options="!archcheck !check"
+
+package() {
+	install -Dm755 "$srcdir/oculus-initramfs-debug-login" \
+		"$pkgdir/usr/share/oculus-monterey/oculus-initramfs-debug-login"
+	install -Dm755 "$srcdir/oculus-map-pmos-subpartitions" \
+		"$pkgdir/usr/share/oculus-monterey/oculus-map-pmos-subpartitions"
+	install -Dm755 "$srcdir/oculus-initramfs-recovery-hook" \
+		"$pkgdir/usr/share/mkinitfs/hooks/20-oculus-recovery.sh"
+	install -Dm755 "$srcdir/oculus-initramfs-recovery-cleanup" \
+		"$pkgdir/usr/share/mkinitfs/hooks-cleanup/80-oculus-recovery.sh"
+	install -Dm644 "$srcdir/oculus-initramfs-recovery.files" \
+		"$pkgdir/usr/share/mkinitfs/files/20-oculus-recovery.files"
+}
+
+sha512sums="
+6092521456b4522a7dce6219006c4d8d62ee9dfbaf64ca288bf5b3516dc8c4f518cdc3b486e7c6b912ae21cee41d9de5bf9193e94d75d6ebf237ff30c8fa6b12  oculus-initramfs-debug-login
+67398fbe308ddc08a941011918cd6843aa6736b1bdc69d83a39dc9bf8567a5cc3c40e46c4348687c2082d59cafe54f1ec1ca915a267b4db2a1179afc26db9a48  oculus-map-pmos-subpartitions
+771ba9e1003986666e8d094c0c4b706d2c1ba90aa86716f23dfc90a55b09e916786102708943d251141e6052a82dae33a940a0a9f177fec06a4261732fd49f42  oculus-initramfs-recovery-cleanup
+6553086d69a55d8ea0d370f8fa5fa37d75cc826dbe7cb27892057ac2744cb35b1292e9d4ef9ddec477fc1b472387190626fcd9eb8ca4fa0a44cfde8fd8d5bf0f  oculus-initramfs-recovery-hook
+c30398e5140ed040fd2f7b856b7eaf2e53615a25d2d5a92ed72223ba9419647728938dad67cf9caa3133d687a1430060e08cb39b1be7e1633d0ded3ff44f764b  oculus-initramfs-recovery.files
+"
