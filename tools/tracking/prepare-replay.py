@@ -14,6 +14,8 @@ from scipy.spatial.transform import Rotation
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('recording'); p.add_argument('camera_calibration')
 p.add_argument('imu_calibration'); p.add_argument('output')
+p.add_argument('--fit-imu-clock', action='store_true',
+               help='Experimental lower-envelope affine MCU-to-host clock fit')
 a = p.parse_args(); out = Path(a.output); out.mkdir(parents=True, exist_ok=True)
 cameras = json.load(open(a.camera_calibration))['CameraCalibration']
 imu_cal = json.load(open(a.imu_calibration))['ImuCalibration']
@@ -26,9 +28,25 @@ with open(a.recording, 'rb') as f:
         elif kind == b'I': imu_rows = list(csv.DictReader(io.StringIO(b.decode())))
 assert cam_records and imu_rows
 offset = min(int(r['host_monotonic_ns']) - int(r['device_timestamp'])*1000 for r in imu_rows)
+imu_times = [int(r['device_timestamp'])*1000+offset for r in imu_rows]
+clock_rate = 1000.0
+if a.fit_imu_clock:
+    device = np.array([int(r['device_timestamp']) for r in imu_rows],dtype=np.int64)
+    host = np.array([int(r['host_monotonic_ns']) for r in imu_rows],dtype=np.int64)
+    assert np.all(np.diff(device)>0), 'MCU clock reset or duplicate samples'
+    x=(device-device[0]).astype(float)/1e6
+    y=(host-host[0]).astype(float)/1e9
+    assert x[-1]>=8, 'Need at least eight seconds to estimate clock rate'
+    slope,intercept=np.polyfit(x,y,1)
+    residual=y-(slope*x+intercept)
+    low=residual<=np.quantile(residual,.1)
+    slope,intercept=np.polyfit(x[low],y[low],1)
+    assert .998<slope<1.002, 'Implausible clock rate; inspect recording'
+    intercept+=np.min(y-(slope*x+intercept))
+    imu_times=(host[0]+np.rint((slope*x+intercept)*1e9).astype(np.int64)).tolist()
+    clock_rate=float(slope*1000)
 events = []
-for r in imu_rows:
-    t = int(r['device_timestamp'])*1000 + offset
+for r,t in zip(imu_rows,imu_times):
     ax,ay,az,gx,gy,gz = (float(r[k]) for k in ('ax_g','ay_g','az_g','gx_deg_s','gy_deg_s','gz_deg_s'))
     vals = [-ay*9.80665,-ax*9.80665,-az*9.80665,-gy*np.pi/180,-gx*np.pi/180,-gz*np.pi/180]
     events.append((t, b'I', struct.pack('<6f', *vals)))
@@ -62,6 +80,7 @@ for c in sorted(cameras,key=lambda c:int(c['Id'])):
 (out/'calibration.json').write_text(json.dumps({'value0':cal},indent=2))
 report = dict(camera_publications=len(cam_records),imu_samples=len(imu_rows),
               unsynchronized_groups_skipped=skipped,estimated_host_minus_mcu_ns=offset,
+              imu_clock_fit=a.fit_imu_clock,estimated_host_ns_per_device_tick=clock_rate,
               caveats=__doc__)
 (out/'preparation.json').write_text(json.dumps(report,indent=2))
 print(json.dumps(report,indent=2))

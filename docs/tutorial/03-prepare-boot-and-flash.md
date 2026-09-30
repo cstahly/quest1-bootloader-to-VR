@@ -1,76 +1,55 @@
-# Stage 3 — Prepare the boot image and flash
+# 3 — Prepare boot + flash
 
-**Goal:** a boot image that actually boots the stage-2 rootfs, flashed to slot B.
-
-## Concept — this is the one non-turnkey stage
-
-Two device-specific facts make a clean `boot.img` *not* boot as-is:
+The non-turnkey stage. A clean `boot.img` won't boot as-is, for two device reasons:
 
 1. **cmdline truncation.** The bootloader reads only the first 512 bytes of the kernel
-   command line. pmbootstrap appends the rootfs's full `pmos_root_uuid`, which gets
-   **chopped**, so root can't be found by UUID. **Fix:** mount root by *device name*
-   instead — `pmos_root=/dev/mapper/oculus-pmos-root`. (This is the "remaining
-   consolidation item" the boot doc flags — it's not yet baked into the port's initramfs
-   sources, so you do it here by hand.)
-2. **Boot signature.** The image must carry a valid `BootSignature`, grafted from **your
-   own device's** stock `boot_b` (from stage 1). This is why the backup was mandatory.
+   cmdline. pmbootstrap appends the rootfs's full `pmos_root_uuid`, which gets chopped →
+   root not found by UUID. Fix: mount by device name instead —
+   `pmos_root=/dev/mapper/oculus-pmos-root`. (Not baked into the port initramfs yet;
+   that's the "cleaner fix" still open, so you do it by hand here.)
+2. **Boot signature.** The image needs a valid `BootSignature`, grafted from *your own*
+   stock `boot_b` (stage 1). That's why the backup wasn't optional.
 
-The helper `prepare-monterey-boot` (in `tools/`) does the graft. You supply the
-device-name-mount cmdline.
+`prepare-monterey-boot` (in `tools/`) does the graft; you supply the device-name cmdline.
 
-## Steps
-
-**1. Finalize the boot image** — graft the signature from your stock `boot_b`:
+## Finalize + flash
 
 ```
 prepare-monterey-boot <exported boot.img> $VELA/<serial>/boot_b.img <finalized-boot.img>
+# make sure the cmdline mounts root by device name, not UUID:
+grep -a pmos_root <finalized-boot.img>        # → /dev/mapper/oculus-pmos-root
 ```
 
-Ensure the resulting cmdline mounts root by device name, not UUID
-(`pmos_root=/dev/mapper/oculus-pmos-root`). See `../boot-bringup.md` §5A/§5B and the
-"REMAINING consolidation item" note; `tools/prepare-4k-boot.py` is the reference for how
-the guarded image was assembled.
+`tools/prepare-4k-boot.py` is the reference for how the guarded image was assembled; see
+`../boot-bringup.md` §5A/§5B for the cmdline detail.
 
-> ⚠️ **Keep the recovery watchdog armed.** The bring-up boot images use a ~300 s recovery
-> timeout so a bad boot returns to fastboot on its own. **Never** build an image with
-> `oculus.recovery_timeout=0` — that removes the only automatic way back. (Stage 8.)
-
-**2. Flash slot B** (never A — A stays as your stock fallback):
+Flash slot **B** (A stays stock):
 
 ```
-# device in fastboot (power off, then Vol-Down+Power → USB update mode)
+# device in fastboot: power off, Vol-Down+Power
 fastboot flash system_b <exported system_b image>
 fastboot flash boot_b   <finalized-boot.img>
 fastboot reboot
 ```
 
-> **Physical action — do this, then continue:** power the headset off, hold
-> **Vol-Down + Power** to enter USB update mode, and confirm `fastboot devices` lists it
-> before flashing. (Agents: print this, pause, wait for the human.)
+## Check
 
-## Definition of done
+- both flashes OKAY
+- cmdline greps as device-name mount (above), image carries a BootSignature
+- you flashed **B only** — not A, bootloader, modem, or NV
 
-- [ ] `fastboot flash system_b` and `fastboot flash boot_b` both report OKAY.
-- [ ] The finalized boot image's cmdline mounts root by **device name**
-      (`grep -a pmos_root <finalized-boot.img>` shows `/dev/mapper/oculus-pmos-root`,
-      not a truncated UUID).
-- [ ] The finalized boot image carries a BootSignature (the graft step succeeded).
-- [ ] You did **not** flash A, bootloader, modem, or NV.
+## Notes
 
-## When it fails
+- The bring-up images keep a **~300 s recovery watchdog** — a bad boot returns to
+  fastboot on its own. A boot that drops off after ~5 min is the watchdog working, not a
+  brick. Leave it armed; `oculus.recovery_timeout=0` once hung the device off-bus for
+  hours with no auto-recovery.
+- `fastboot`'s flag is `--cmdline`, not `-c`.
+- Magisk / boot-ramdisk root doesn't apply — legacy system-as-root ignores it.
+- Root not found / mount oops after flashing → back to the cmdline (device-name mount?)
+  or 4Kn (stage 2 `dumpe2fs` said 4096?).
 
-- **`fastboot: -c` rejected:** the flag is `--cmdline`, not `-c`.
-- **Boots then drops off USB after ~5 min:** that's the watchdog returning to fastboot —
-  expected for a guarded image, not a failure. Reflash/boot B again to retry.
-- **Root not found / mount oops:** you're back to the UUID-truncation or 4Kn issue —
-  confirm the cmdline uses the mapper device name and that stage 2's `dumpe2fs` said
-  4096.
-- **Magisk/ramdisk root tricks don't apply here** — this is legacy system-as-root; the
-  boot ramdisk approach is ignored.
+Detail: `../boot-bringup.md` §5, §6, "CONFIRMED FULL BOOT + SSH", "REMAINING
+consolidation item".
 
-## Full detail
-
-`../boot-bringup.md` §5 (blockers A/B), §6, the "CONFIRMED FULL BOOT + SSH" section
-(known-good guarded image + SHA256), and "REMAINING consolidation item — boot-side."
-
-→ Next: [`04-first-boot-and-ssh.md`](04-first-boot-and-ssh.md)
+→ [4 — first boot + SSH](04-first-boot-and-ssh.md)

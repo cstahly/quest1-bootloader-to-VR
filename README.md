@@ -9,11 +9,10 @@ port — the port's device packages plus the fixes, patches, and diagnostic rend
 developed while getting the device from "unlocked bootloader" to "boots to a shell,
 draws an upright desktop, tracks your head, and is building an OpenXR runtime."
 
-> 📖 **New here? Start with the step-by-step tutorial: [`docs/tutorial/`](docs/tutorial/README.md).**
-> It takes an unlocked Quest 1 to a booting, SSH-able, Wi-Fi-connected Nura headset as
-> paged stages — each with exact commands, a verifiable "Definition of done," and
-> troubleshooting — written so a person *or* an AI agent can execute it. The `docs/*.md`
-> files below are the deeper raw bring-up logs the tutorial points back to.
+> 📖 **Start here: [`docs/tutorial/`](docs/tutorial/README.md)** — paged bring-up from
+> unlocked bootloader to a booting, SSH-able, Wi-Fi Nura headset. Each page: the concept,
+> the commands, how you know it worked, what bit us. The `docs/*.md` files below are the
+> deeper raw bring-up logs it points back to.
 
 > ⚠️ **Work in progress, and these are working notes.** The docs under `docs/` are
 > real bring-up logs written for continuity between sessions — they still contain

@@ -1,84 +1,66 @@
-# Stage 6 — Becoming a headset: display, head tracking, lens optics
+# 6 — Display / head tracking / optics
 
-**Goal:** draw on the panel, track head *orientation* (3DoF), and correct the lens
-distortion — enough to wear it and look around a scene.
+Draw on the panel, track head *orientation* (3DoF), correct the lens distortion — enough
+to wear it and look around a scene. **Diagnostic-grade:** the pieces work in a standalone
+renderer (wearer-confirmed), but there's no finished OpenXR compositor/home yet.
 
-**Status: diagnostic-grade.** These work in a standalone renderer and are wearer-confirmed,
-but they are **not yet integrated into a finished OpenXR compositor/home**. Treat this as
-"the pieces work," not "there's a VR shell."
+## What's what
 
-## Concept
+- **Display:** real framebuffer 2880×1600. Xorg fbdev, or the direct-framebuffer path
+  (~59.7 fps vs ~19.5 under X11).
+- **Head tracking:** syncboss IMU gyro+accel fusion → where you're looking. **3DoF**
+  (rotation only). Positional/walking is stage 7.
+- **Optics:** pre-distort the panel image to cancel the lenses. The stock **distortion
+  mesh** was RE'd from your system image; the renderer applies it. Mesh is device-specific
+  Meta IP — pull from your device; only the format's documented here.
 
-- **Display:** the panel is a real framebuffer (2880×1600). You can drive it via Xorg
-  fbdev, or — faster — a direct-framebuffer path (~59.7 fps vs ~19.5 fps under X11).
-- **Head tracking (orientation only):** fuse the syncboss IMU (gyro + accel) to get
-  where you're looking. This is **3DoF** — rotation, not position. Positional (walking)
-  is stage 7.
-- **Lens optics:** the panel image must be pre-distorted to cancel the lenses' pincushion.
-  The stock **distortion mesh** was reverse-engineered from your system image; the
-  renderer applies it. (The mesh blob is Meta's IP and device-specific — extract from
-  *your* device; only the *format* is documented here.)
+## Run it (on the headset, over SSH)
 
-## Steps (on the booted headset, over SSH)
-
-**1. Stage the renderer + your mesh** to `/tmp` (both renderers look for
-`distortion-mesh.bin` beside the executable):
+Stage the renderer + your `distortion-mesh.bin` to `/tmp` (both renderers look for the
+mesh beside the executable):
 
 ```
-# from build host: tar the built renderer(s) + your extracted distortion-mesh.bin, scp, untar in /tmp
-/tmp/test-lens-mesh /tmp/distortion-mesh.bin        # sanity-check the mesh loads
+/tmp/test-lens-mesh /tmp/distortion-mesh.bin        # mesh loads?
 ```
 
-**2. Static display/perf benchmark** (no sensors, no wearer needed):
+Static display/perf bench (no sensors, no wearer):
 
 ```
 DISPLAY=:0 timeout 12 /tmp/monterey-head-mesh      --static
 DISPLAY=:0 timeout 20 /tmp/monterey-head-mesh-fast --static
 ```
 
-**3. Start one Monado service for tracked mode** (never start a second runtime):
+One Monado service for tracked mode (don't start a second runtime):
 
 ```
 DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/10000 \
 XR_RUNTIME_JSON=/usr/share/openxr/1/openxr_monado.json \
 XRT_COMPOSITOR_NULL=1 XRT_NO_STDIN=1 MONTEREY_LOG=info \
-monado-service &        # check log for gravity init + Quest presence
+monado-service &        # log should show gravity init + Quest presence
 ```
 
-**4. Tracked scene** — *physical action, then wait:*
-
-> **Ask the wearer:** "Put the headset on and look forward." **Then pause and wait for
-> their confirmation** before launching the scene, so heading points forward. (Agents:
-> do not proceed on your own.)
+Tracked scene — heading initializes to wherever you're looking, so launch it once the
+headset's on and facing forward:
 
 ```
-DISPLAY=:0 /tmp/monterey-head-mesh-fast     # launch only after the wearer confirms
+DISPLAY=:0 /tmp/monterey-head-mesh-fast
 ```
 
-**5. Ask, then wait:** "Is motion smooth and do the lines still look correct?" Don't
-change the scene while waiting; mind the watchdog budget.
+## Worked when
 
-## Definition of done
-
-- [ ] `--static` benchmark runs and reports a stable frame rate.
-- [ ] With Monado running and the headset worn, turning your head moves the view the
-      right way (wearer-confirmed).
-- [ ] Straight lines look straight through the lenses (distortion corrected,
-      wearer-confirmed).
+- `--static` runs at a stable rate
+- with Monado up and the headset worn, turning your head moves the view the right way
+- straight lines look straight through the lenses
 
 ## Honest limits
 
-- This is **3DoF** (look around), **no positional** "around" — that's stage 7.
-- It's a **diagnostic scene**, not an OpenXR home/compositor. Optics live in the
-  standalone renderer, not yet in the Monado runtime.
-- Rendering is **software** (see stage 8: no Vulkan driver for the Adreno 540). Measured
-  cadence wandered 72–90 Hz across tests; don't claim a fixed panel rate.
-- **Don't** `cat` `fb0`/`partial_vsync` sysfs on this kernel — a read triggers a
-  NULL-pointer kernel oops. Known broken endpoint.
+- **3DoF only** — no positional "around" (that's stage 7).
+- Diagnostic scene, not an OpenXR home. Optics live in the standalone renderer, not the
+  Monado runtime yet.
+- **Software rendering** — no Vulkan driver for the Adreno 540 (stage 8). Cadence wandered
+  72–90 Hz across tests; don't trust a fixed panel rate.
+- Don't `cat` `fb0`/`partial_vsync` sysfs — a read oopses this kernel.
 
-## Full detail
+Detail: `../tracking-optics-performance.md`, `../VR-RUNTIME-IN-PROGRESS.md`.
 
-`../tracking-optics-performance.md` (tracking fix, lens mesh, performance, the exact
-resume sequence) and `../VR-RUNTIME-IN-PROGRESS.md` (runtime integration state).
-
-→ Next: [`07-positional-tracking.md`](07-positional-tracking.md)
+→ [7 — positional tracking](07-positional-tracking.md)

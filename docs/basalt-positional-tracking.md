@@ -2,6 +2,53 @@
 
 ## Active continuation — visual matching investigation
 
+Current pending physical question is now **60-second precise repeat readiness**,
+with two marked spots about 50 cm apart and a marked return location. Previous
+readiness questions below are completed. Wait for actual Ready before capture.
+
+Motion03 completed: `vio-motion-03.bin` (901 camera groups, 32,491 IMU samples),
+prepared and rectified in `vio-motion-replay-03` / `vio-motion-rectified-03` on Kali.
+Unchanged selected settings (grid25, levels2, recovered-distance-squared1.0,
+original IMU/noise) produce 901 timestamp-matched poses: peak excursion 0.5016 m,
+endpoint offset 0.2855 m. X progresses about 0.014 m at10s, 0.234 at15s, 0.487 at20s,
+0.416 at25s, 0.276 at30s. Owner was *trying* to return to the starting point and
+offered more precision; do not label the endpoint offset pure tracking drift.
+IMU gyro norm median is 3.46 deg/s over27–30s versus1.02 over0–3s, supporting that
+the end was not a clean stationary reference.
+
+The same selected setup on the original stationary recording completes451poses:
+after excluding the first3s, endpoint displacement4.9mm and maximum excursion24.1mm.
+All these results are offline; no positional-tracking code has been deployed.
+
+Latest: second motion recording saved (`vio-motion-02.bin`, 601 camera groups,
+22,339 IMU samples); sampled cameras 1/3 are clear. Owner says they did not move
+very far, so **50 cm is not ground truth for either existing motion clip**.
+
+Offline `rectify-replay.py` resamples each physical camera to a common virtual
+pinhole orientation, retaining camera centres and timestamps. First-frame visual
+inspection shows coherent, aligned room views. Valid source coverage per camera is
+about 98.0/76.4/98.3/73.1 percent. This transform is not deployed on the headset.
+Using original IMU/noise values on motion02:
+
+| Images/settings | Endpoint offset | Maximum excursion | Maximum shared landmarks |
+|---|---:|---:|---:|
+| Original fisheye, defaults | 20.8246 m | 20.8246 m | 0 |
+| Rectified, defaults | 0.3259 m | 1.3786 m | 1 |
+| Rectified, grid 25, pyramid levels 2 | 0.0357 m | 0.1940 m | 3 |
+| Above, recovered-distance-squared threshold 1.0 | 0.0252 m | 0.1344 m | 5 |
+| Above, fixed-depth guess + 20 iterations | 0.0501 m | 0.1251 m | 4 |
+
+These isolate an image-matching problem beyond accelerometer weighting. They do
+not establish accurate metric movement; landmark support remains sparse. Testing
+the same rectified/grid25/levels2/consistency1 setup on the stationary clip is in
+progress. Private configs/results are under `kali:~/quest-camera-work/` in
+`vio-motion-rectified-02`, `matching-density-audit`, and `vio-static-rectified-01`.
+
+The **current** pending question asks readiness for a 30-second larger out-and-back
+capture between two spots roughly 50 cm apart, cameras clear, pausing at each spot.
+Wait for actual Ready, then start and verify Wi-Fi capture before cueing movement.
+Earlier readiness questions below have already been answered and are historical.
+
 Update: the experimental patch-rotation initialization produced the exact same
 stationary trajectory/feature counts (still no shared-camera landmarks). It was
 reversed in the host checkout and the library rebuilt; the saved patch is a failed

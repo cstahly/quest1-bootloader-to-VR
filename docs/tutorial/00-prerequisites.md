@@ -1,67 +1,48 @@
-# Stage 0 — Prerequisites
+# 0 — Prerequisites
 
-**Goal:** have every tool, account, and safety net in place before you touch the device.
+## Precondition: unlocked bootloader
 
-## Concept
-
-You're going to replace the Quest's Android with a Linux (Nura/postmarketOS) rootfs
-built from source, flash it to the unused `system_b`/`boot_b` slot, and boot it. Nothing
-here works unless the bootloader is *already unlocked* and you have a way back to stock.
-
-## The precondition: an unlocked bootloader
-
-This tutorial **starts** at an unlocked bootloader. Unlocking is a separate exploit
-chain, **QuestStack** (GhostLock/ionstack temporary root + the CVE-2021-1931 ABL
-overflow → `fastboot oem unlock`). It is not part of this repo. Confirm you're unlocked:
+This starts at an unlocked bootloader. Unlocking is a separate chain — **QuestStack**
+(GhostLock/ionstack temp-root + CVE-2021-1931 ABL overflow → `fastboot oem unlock`). Not
+in this repo. Check:
 
 ```
-adb reboot bootloader          # or: power off, then Vol-Down+Power → USB update mode
 fastboot getvar all 2>&1 | grep -Ei 'unlock|flash.locked|verifiedbootstate'
-# want: unlocked:yes  (equivalently flash.locked=0, verifiedbootstate=orange)
+# want: unlocked:yes  (flash.locked=0, verifiedbootstate=orange)
 ```
 
-If that shows locked, stop — do QuestStack first.
+Locked → do QuestStack first, nothing here applies.
 
 ## Hardware
 
-- The Quest 1 (`monterey`, Snapdragon 835 / MSM8998, WCN3990 Wi-Fi).
-- A good USB-C data cable.
-- The controllers (for later stages).
+Quest 1 (`monterey`, SD835/MSM8998, WCN3990 Wi-Fi), a real USB-C data cable, the
+controllers (later stages).
 
 ## Build host
 
-A Linux machine (this port was built on Kali) with:
-- **pmbootstrap 3.11.x** (`pip install pmbootstrap` or from git; this port used `fde5aad`).
-- An **aarch64 cross toolchain** — pmbootstrap's chroot provides one; you'll use it to
-  build small on-device C tools (the headset has no compiler).
-- `fastboot`, `adb`, `git`, standard build tools.
-- Plenty of disk (pmbootstrap pulls a full Alpine build environment).
+Linux (this was built on Kali):
+- **pmbootstrap 3.11.x** (`pip install pmbootstrap`; this port used `fde5aad`)
+- pmbootstrap's chroot gives you the **aarch64 cross toolchain** — you'll need it, the
+  headset has no compiler
+- `fastboot`, `adb`, `git`, build tools, lots of disk
 
-A macOS or Linux **control machine** for USB networking + SSH into the headset is fine
-too (this bring-up drove the device from a Mac and built on Kali over the LAN).
+A macOS/Linux box for USB-net + SSH into the headset works fine as the control side.
 
 ## This repo
 
 ```
-git clone https://github.com/cstahly/quest1-nura-port
-cd quest1-nura-port
+git clone https://github.com/cstahly/quest1-nura-port && cd quest1-nura-port
 ```
 
-It carries the port packages, patches, tools, and these docs — **not** images, blobs, or
-keys (see the README's "Deliberately NOT in this repo").
+Port packages, patches, tools, docs — no images/blobs/keys.
 
-## Definition of done
+## Check
 
-- [ ] `fastboot getvar all` shows the bootloader **unlocked**.
-- [ ] `pmbootstrap --version` prints 3.11.x.
-- [ ] You can reach both the Quest (fastboot) and the build host.
-- [ ] You've read [`08-safety-and-dead-ends.md`](08-safety-and-dead-ends.md) — the rules
-      that keep a single irreplaceable device alive.
+- `fastboot getvar all` → unlocked
+- `pmbootstrap --version` → 3.11.x
+- you can reach the Quest in fastboot and the build host
 
-## When it fails
+**fastboot not seeing it?** It has to be in bootloader mode — power off fully, hold
+**Vol-Down + Power**.
 
-- **`fastboot` doesn't see the device:** it must be in bootloader/USB-update mode, not
-  booted Android. Power off fully, then hold **Vol-Down + Power**.
-- **Not unlocked:** this tutorial can't help — QuestStack is upstream of everything here.
-
-→ Next: [`01-back-up-stock.md`](01-back-up-stock.md)
+→ [1 — back up stock](01-back-up-stock.md)
