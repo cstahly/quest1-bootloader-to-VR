@@ -1,0 +1,16 @@
+#!/sbin/openrc-run
+description="Guarded Monterey Wi-Fi bring-up with read-only NV backing"
+command=/usr/sbin/oculus-wifi
+command_args=run
+command_background=true
+pidfile=/run/oculus-wifi.pid
+output_log=/run/oculus-wifi-start.log
+error_log=/run/oculus-wifi-start.log
+depend() {
+    need oculus-ipc-security
+    after oculus-rmtfs
+}
+stop() {
+    ewarn "Wi-Fi retains a modem vote until reboot; use the guarded recovery reboot."
+    return 1
+}

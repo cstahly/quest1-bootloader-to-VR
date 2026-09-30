@@ -1,0 +1,39 @@
+#!/bin/sh
+# Native OpenXR session, deliberately independent of Xorg/labwc.
+set -eu
+export XDG_RUNTIME_DIR=/run/user/10000
+export XR_RUNTIME_JSON=/usr/share/openxr/1/openxr_monado.json
+export XRT_COMPOSITOR_MONTEREY_FB=1 XRT_COMPOSITOR_NULL=0 XRT_NO_STDIN=1
+export XRT_COMPOSITOR_SCALE_PERCENTAGE=100 MONTEREY_LOG=info IPC_LOG=debug XRT_LOG=debug
+export MONTEREY_DISTORTION_MESH=/var/lib/monado/monterey/distortion-mesh.bin
+[ -r "$MONTEREY_DISTORTION_MESH" ] || { echo 'Stock optical calibration is missing' >&2; exit 1; }
+[ -c /dev/fb0 ] || exit 1
+if pgrep -x Xorg >/dev/null || pgrep -x monado-service >/dev/null; then
+ echo 'Another display/runtime session is already active' >&2; exit 1
+fi
+install -d -m 0700 -o 10000 -g 10000 "$XDG_RUNTIME_DIR"
+service_pid=
+app_pid=
+cleanup() {
+ if [ -n "$app_pid" ]; then kill -TERM "$app_pid" 2>/dev/null || :; wait "$app_pid" 2>/dev/null || :; fi
+ if [ -n "$service_pid" ]; then kill -TERM "$service_pid" 2>/dev/null || :; wait "$service_pid" 2>/dev/null || :; fi
+}
+trap cleanup EXIT
+trap 'exit 130' HUP INT TERM
+monado-service >/tmp/monado-vr-service.log 2>&1 </dev/null &
+service_pid=$!
+count=0
+while ! grep -q 'Gravity initialized' /tmp/monado-vr-service.log || ! grep -q 'Listening socket is fd' /tmp/monado-vr-service.log; do
+ kill -0 "$service_pid"
+ count=$((count+1))
+ if [ "$count" -gt 60 ]; then echo 'Tracking did not calibrate while still' >&2; exit 1; fi
+ sleep 0.25
+done
+# Optional fresh readiness gate for supervised wearable testing.
+if [ -n "${MONTEREY_START_FILE:-}" ]; then
+ while [ ! -e "$MONTEREY_START_FILE" ]; do kill -0 "$service_pid"; sleep 0.2; done
+fi
+if [ "$#" -eq 0 ]; then set -- /usr/bin/oculus-vr-home; fi
+"$@" &
+app_pid=$!
+wait "$app_pid"

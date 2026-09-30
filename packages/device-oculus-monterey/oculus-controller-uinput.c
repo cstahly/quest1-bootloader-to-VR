@@ -17,6 +17,7 @@ struct bridge {
 	int fd;
 	bool dry_run;
 	bool trigger;
+	bool physical_trigger_down;
 	bool grip;
 	bool ax;
 	bool by;
@@ -33,7 +34,8 @@ emit(struct bridge *bridge, unsigned short type, unsigned short code, int value)
 {
 	if (bridge->dry_run) {
 		const char *name = type == EV_REL ? (code == REL_X ? "REL_X" : "REL_Y")
-		                                  : (code == BTN_LEFT   ? "BTN_LEFT"
+		                                  : (code == BTN_TRIGGER ? "BTN_TRIGGER"
+		                                     : code == BTN_LEFT   ? "BTN_LEFT"
 		                                     : code == BTN_RIGHT ? "BTN_RIGHT"
 		                                     : code == BTN_MIDDLE ? "BTN_MIDDLE"
 		                                                          : "KEY_ESC");
@@ -115,6 +117,8 @@ parse_line(struct bridge *bridge, const char *line)
 	}
 
 	bool changed = false;
+	/* Separate physical trigger from the legacy trigger-or-A pointer binding. */
+	update_key(bridge, bridge->trigger, &bridge->physical_trigger_down, BTN_TRIGGER, &changed);
 	update_key(bridge, bridge->trigger || bridge->ax, &bridge->left_down, BTN_LEFT, &changed);
 	update_key(bridge, bridge->grip || bridge->by, &bridge->right_down, BTN_RIGHT, &changed);
 	update_key(bridge, bridge->stick_click, &bridge->middle_down, BTN_MIDDLE, &changed);
@@ -132,7 +136,8 @@ create_device(const char *name)
 		perror("oculus-controller-uinput: open /dev/uinput");
 		return -1;
 	}
-	if (ioctl(fd, UI_SET_EVBIT, EV_KEY) < 0 || ioctl(fd, UI_SET_KEYBIT, BTN_LEFT) < 0 ||
+	if (ioctl(fd, UI_SET_EVBIT, EV_KEY) < 0 || ioctl(fd, UI_SET_KEYBIT, BTN_TRIGGER) < 0 ||
+	    ioctl(fd, UI_SET_KEYBIT, BTN_LEFT) < 0 ||
 	    ioctl(fd, UI_SET_KEYBIT, BTN_RIGHT) < 0 || ioctl(fd, UI_SET_KEYBIT, BTN_MIDDLE) < 0 ||
 	    ioctl(fd, UI_SET_KEYBIT, KEY_ESC) < 0 || ioctl(fd, UI_SET_EVBIT, EV_REL) < 0 ||
 	    ioctl(fd, UI_SET_RELBIT, REL_X) < 0 || ioctl(fd, UI_SET_RELBIT, REL_Y) < 0) {

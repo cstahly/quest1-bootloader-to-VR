@@ -1,0 +1,115 @@
+#!/bin/sh
+# Guarded Monterey Wi-Fi bring-up. Owner firmware and calibration stay private.
+set -eu
+state=/run/oculus-wifi
+firmware=/usr/share/oculus-wifi/firmware
+bin=/usr/libexec/oculus-wifi
+root=/run/quest-cnss-root
+
+case ${1:-status} in
+status)
+    [ -r "$state/status" ] && cat "$state/status"
+    [ -e /sys/class/net/wlan0 ] && iw dev wlan0 info
+    exit 0 ;;
+run) ;;
+*) echo "usage: oculus-wifi {run|status}" >&2; exit 2 ;;
+esac
+
+# This bring-up service deliberately retains both existing recovery guards.
+[ "$(cat /sys/devices/soc/17817000.qcom,wdt/disable)" = 0 ]
+ps | grep '[a]sh -c echo ready .*sleep 300; /usr/sbin/reboot-mode bootloader' >/dev/null
+ps | grep '[s]leep 300' >/dev/null
+[ "$(cut -d. -f1 /proc/uptime)" -lt 150 ]
+[ "$(cat /sys/bus/msm_subsys/devices/subsys5/state)" = OFFLINING ]
+mkdir "$state"
+echo preparing >"$state/status"
+/usr/sbin/oculus-stock-runtime start
+/usr/sbin/oculus-ipc-security
+cd "$firmware"
+sha256sum -c SHA256SUMS >"$state/firmware-check.log"
+mkdir /run/quest-wifi-firmware /run/quest-tftp-write
+chmod 700 /run/quest-tftp-write
+cp -a "$firmware/." /run/quest-wifi-firmware/
+
+# Stop the unmodified server before starting the relative-offset implementation.
+rc-service oculus-rmtfs stop || true
+if pidof rmtfs >/dev/null; then echo "Existing rmtfs did not stop" >&2; exit 1; fi
+/usr/sbin/oculus-rmtfs start
+export LD_PRELOAD=/usr/lib/preload/libqipcrtr4msmipc.so
+RMTFS_MSM8998_RELATIVE_OFFSETS=1 "$bin/rmtfs" -P -r >"$state/rmtfs.log" 2>&1 &
+rmtfs_pid=$!
+"$bin/pd-mapper" --maps /run/quest-wifi-firmware/modemr.jsn /run/quest-wifi-firmware/modemuw.jsn >"$state/mapper.log" 2>&1 &
+mapper_pid=$!
+"$bin/tqftpserv" >"$state/tftp.log" 2>&1 &
+tftp_pid=$!
+unset LD_PRELOAD
+
+# Android helper gets stock code read-only, ordinary random/null devices, and
+# RAM-only /data. It cannot open modem/NV/factory partitions through this root.
+mkdir -p "$root/system" "$root/vendor/firmware" "$root/vendor/firmware_mnt/image" \
+    "$root/data/vendor/wifi/sockets" "$root/dev" "$root/apex" "$root/proc"
+mount --bind /run/oculus-stock-runtime/system "$root/system"
+mount -o remount,bind,ro,nosuid,nodev,exec "$root/system"
+ln -s /system/vendor/bin "$root/vendor/bin"
+ln -s /system/vendor/lib64 "$root/vendor/lib64"
+ln -s /system/vendor/etc "$root/vendor/etc"
+ln -s /system/apex/com.android.runtime.release "$root/apex/com.android.runtime"
+cp /lib/firmware/bdwlan.* "$root/vendor/firmware/"
+cp /lib/firmware/bdwlan.* "$root/vendor/firmware_mnt/image/"
+for device in null urandom random; do
+    touch "$root/dev/$device"
+    mount --bind "/dev/$device" "$root/dev/$device"
+done
+mount --bind /proc "$root/proc"
+mount -o remount,bind,ro,nosuid,nodev,noexec "$root/proc"
+LD_PRELOAD= LD_LIBRARY_PATH=/apex/com.android.runtime/lib64/bionic:/apex/com.android.runtime/lib64:/system/lib64:/vendor/lib64:/system/lib64/vndk-29:/system/lib64/vndk-sp-29 \
+    chroot "$root" /apex/com.android.runtime/bin/linker64 /vendor/bin/cnss-daemon -n >"$state/cnss.log" 2>&1 &
+cnss_pid=$!
+sleep 1
+for pid in "$rmtfs_pid" "$mapper_pid" "$tftp_pid" "$cnss_pid"; do kill -0 "$pid"; done
+printf '%s\n' "$rmtfs_pid" "$mapper_pid" "$tftp_pid" "$cnss_pid" >"$state/helper-pids"
+printf 1 >/sys/kernel/boot_wlan/boot_wlan
+printf /run/quest-wifi-firmware >/sys/module/firmware_class/parameters/path
+[ "$(cat /sys/module/firmware_class/parameters/path)" = /run/quest-wifi-firmware ]
+echo starting-modem >"$state/status"
+exec 3</dev/subsys_modem
+echo modem-online >"$state/status"
+for attempt in $(seq 1 30); do
+    if [ -e /sys/class/net/wlan0 ]; then
+        # Stock calibration MAC is not exposed by this port. Preserve a stable,
+        # locally administered address rather than the driver's shared default.
+        mkdir -p /etc/oculus-wifi
+        if [ ! -s /etc/oculus-wifi/mac-address ]; then
+            od -An -N5 -tx1 /dev/urandom | awk '{printf "02:%s:%s:%s:%s:%s\n", $1,$2,$3,$4,$5}' \
+                >/etc/oculus-wifi/mac-address
+        fi
+        if ! ip link set wlan0 address "$(cat /etc/oculus-wifi/mac-address)"; then
+            echo "Could not apply the saved local Wi-Fi address" >&2
+        fi
+        echo wifi-ready >"$state/status"
+        break
+    fi
+    sleep 1
+done
+[ -e /sys/class/net/wlan0 ] || echo wifi-not-ready >"$state/status"
+profile=/etc/wpa_supplicant/wpa_supplicant-wlan0.conf
+if [ -e /sys/class/net/wlan0 ] && [ -r "$profile" ]; then
+    if wpa_supplicant -B -s -D nl80211 -i wlan0 -c "$profile" \
+        -P /run/wpa_supplicant-wlan0.pid >"$state/wpa.log" 2>&1; then
+        echo wifi-authenticating >"$state/status"
+        for attempt in $(seq 1 30); do
+            if wpa_cli -p /run/wpa_supplicant -i wlan0 status | grep -q '^wpa_state=COMPLETED$'; then
+                echo wifi-associated >"$state/status"
+                udhcpc -b -i wlan0 -p /run/udhcpc-wlan0.pid \
+                    -s /usr/share/udhcpc/default.script >"$state/dhcp.log" 2>&1 || true
+                break
+            fi
+            sleep 1
+        done
+    else
+        echo wifi-authentication-start-failed >"$state/status"
+    fi
+fi
+# Keep the PIL vote until the existing recovery reboot. Do not exercise the
+# downstream modem shutdown path by treating this as a restartable daemon.
+while :; do sleep 30; done

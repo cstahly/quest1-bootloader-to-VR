@@ -1,4 +1,5 @@
 /* Local diagnostic: Monado Monterey pose, X11 wireframe, no persistent writes. */
+#define _GNU_SOURCE
 #define XR_USE_TIMESPEC
 #include <time.h>
 #include <openxr/openxr.h>
@@ -7,8 +8,10 @@
 #include <X11/keysym.h>
 #include <limits.h>
 #include "quest-lens-mesh.h"
+#include "framebuffer.h"
 #include <math.h>
 #include <signal.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,7 +19,12 @@
 #include <unistd.h>
 static volatile sig_atomic_t running=1;
 static struct quest_lens_mesh lens;
-static unsigned long line_color=0xffffff;
+static _Thread_local unsigned long line_color=0xffffff;
+static _Thread_local int project_clip_fast;
+static struct framebuffer fb;
+static XrVector3f scene_position;
+static XrVector3f subtract(XrVector3f a,XrVector3f b){return (XrVector3f){a.x-b.x,a.y-b.y,a.z-b.z};}
+static XrVector3f add(XrVector3f a,XrVector3f b){return (XrVector3f){a.x+b.x,a.y+b.y,a.z+b.z};}
 static void stop(int sig) { (void)sig; running=0; }
 static long long now_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return (long long)t.tv_sec*1000000000LL+t.tv_nsec; }
 static XrQuaternionf conjugate(XrQuaternionf q) { return (XrQuaternionf){-q.x,-q.y,-q.z,q.w}; }
@@ -38,26 +46,32 @@ static int project(XrVector3f p,int eye,int channel,int w,int h,int *x,int *y) {
  p.x-=(eye?0.03175f:-0.03175f);
  if(p.z>-.1f)return 0;
  float gx,gy;
- if(!quest_lens_project_fast(&lens,eye,channel,p.x/-p.z,p.y/-p.z,&gx,&gy))return 0;
+ if(!(project_clip_fast?quest_lens_project_clipped(&lens,eye,channel,p.x/-p.z,p.y/-p.z,&gx,&gy):quest_lens_project_fast(&lens,eye,channel,p.x/-p.z,p.y/-p.z,&gx,&gy)))return 0;
  *x=eye*w+(int)lroundf(gx*w/32.f+lens.center_shift[eye]);
  /* Stock mesh rows increase from bottom to top; X11 pixels increase downward. */
  *y=(int)lroundf((32.f-gy)*h/32.f);return 1;
 }
+static void draw_polyline(Display*d,Drawable p,GC gc,XPoint *points,int count,int eye,unsigned long color) {
+ if(d)XDrawLines(d,p,gc,points,count,CoordModeOrigin);
+ else for(int i=1;i<count;i++)framebuffer_line(&fb,points[i-1].x,points[i-1].y,points[i].x,points[i].y,eye,(unsigned)color);
+}
 static void line(Display*d,Drawable p,GC gc,XrQuaternionf q,int eye,int w,int h,XrVector3f a,XrVector3f b) {
- a=rotate(q,a);b=rotate(q,b);
+ a=rotate(q,subtract(a,scene_position));b=rotate(q,subtract(b,scene_position));
  for(int channel=0;channel<3;channel++){
   unsigned long color=line_color&(0xffUL<<(16-channel*8));if(!color)continue;
-  XSetForeground(d,gc,color);XPoint points[25];int count=0;
+  if(d)XSetForeground(d,gc,color);
+  XPoint points[25];int count=0;
   /* A straight scene edge must become a curve on the bare panel. */
   for(int n=0;n<=24;n++){
    float t=n/24.f;XrVector3f v={a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t,a.z+(b.z-a.z)*t};
    int x,y;
    if(project(v,eye,channel,w,h,&x,&y)){points[count++]=(XPoint){(short)x,(short)y};}
-   else {if(count>1)XDrawLines(d,p,gc,points,count,CoordModeOrigin);count=0;}
+   else {if(count>1)draw_polyline(d,p,gc,points,count,eye,color);count=0;}
   }
-  if(count>1)XDrawLines(d,p,gc,points,count,CoordModeOrigin);
+  if(count>1)draw_polyline(d,p,gc,points,count,eye,color);
  }
 }
+#include "diagnostic-hud.h"
 int main(int argc,char **argv) {
  char mesh_path[PATH_MAX];const char *override=getenv("MONTEREY_DISTORTION_MESH");
  if(override)snprintf(mesh_path,sizeof(mesh_path),"%s",override);
@@ -70,7 +84,9 @@ int main(int argc,char **argv) {
  int pose_only=argc>1&&!strcmp(argv[1],"--pose-only");
  int stationary=argc>1&&!strcmp(argv[1],"--static");
  Display*d=NULL;Window win=0;Pixmap back=0;GC gc=0;int width=2880,height=1600;
- if(!pose_only){
+ if(!pose_only && getenv("MONTEREY_FRAMEBUFFER")){
+  if(!framebuffer_open(&fb,"/dev/fb0"))return 2;
+ } else if(!pose_only){
   d=XOpenDisplay(NULL);if(!d){fprintf(stderr,"Cannot open X display\n");return 2;}
   int screen=DefaultScreen(d);width=DisplayWidth(d,screen);height=DisplayHeight(d,screen);
   if(width!=(int)lens.width || height!=(int)lens.height){fputs("Display does not match mesh\n",stderr);XCloseDisplay(d);return 2;}
@@ -80,7 +96,10 @@ int main(int argc,char **argv) {
   gc=XCreateGC(d,win,0,NULL);back=XCreatePixmap(d,win,width,height,DefaultDepth(d,screen));
   XSetLineAttributes(d,gc,3,LineSolid,CapRound,JoinRound);
  }
- signal(SIGINT,stop);signal(SIGTERM,stop);signal(SIGALRM,stop);alarm(pose_only?15:180);
+ signal(SIGINT,stop);signal(SIGTERM,stop);signal(SIGALRM,stop);/* Extended sessions are allowed only while the independent guard reports
+  * a live deadline. Manual diagnostics retain their original time limit. */
+ int guarded_session=getenv("MONTEREY_RECOVERY_SESSION")!=NULL;
+ alarm(pose_only?15:(guarded_session?0:180));
  XrInstance instance=XR_NULL_HANDLE; XrSession session=XR_NULL_HANDLE;
  XrSpace local=XR_NULL_HANDLE,view=XR_NULL_HANDLE; XrSystemId system;
  #define CHECK_XR(expr) do { XrResult er=(expr); if(XR_FAILED(er)){fprintf(stderr,"%s failed: %d\n",#expr,er);return 3;} } while(0)
@@ -117,7 +136,8 @@ int main(int argc,char **argv) {
  XrQuaternionf origin={0,0,0,1};int frames=0;
  long long start=now_ns();
  while(running){
-  long long frame_start=now_ns();
+  long long frame_start=now_ns(), pose_end, draw_end, sync_end;
+  static long long pose_ns=0, draw_ns=0, sync_ns=0;
   XrSpaceVelocity velocity={.type=XR_TYPE_SPACE_VELOCITY};
   XrQuaternionf q={0,0,0,1};
   if(!stationary){
@@ -131,13 +151,16 @@ int main(int argc,char **argv) {
   }
   if(frames==0)recenter_heading(q,&origin);
   if(frames%10==0){printf("t=%.3f q=%.6f,%.6f,%.6f,%.6f gyro=%.4f,%.4f,%.4f\n",(now_ns()-start)/1e9,q.x,q.y,q.z,q.w,velocity.angularVelocity.x,velocity.angularVelocity.y,velocity.angularVelocity.z);fflush(stdout);}
-  if(d){
+  pose_end=now_ns();
+  if(d || fb.pixels){
    XrQuaternionf camera=conjugate(mul(conjugate(origin),q));
-   XSetFunction(d,gc,GXcopy);XSetForeground(d,gc,0);XFillRectangle(d,back,gc,0,0,width,height);
-   XSetFunction(d,gc,GXor);
+   if(d){XSetFunction(d,gc,GXcopy);XSetForeground(d,gc,0);XFillRectangle(d,back,gc,0,0,width,height);XSetFunction(d,gc,GXor);}
+   else memset(fb.pixels,0,fb.bytes);
+   double camera_now=now_ns()/1e9;camera_controls_poll(camera_now);camera_panel_read(camera_now);
+   camera_floor_update();
    for(int eye=0;eye<2;eye++){
     XRectangle clip={(short)(eye*width/2),0,(unsigned short)(width/2),(unsigned short)height};
-    XSetClipRectangles(d,gc,0,0,&clip,1,Unsorted);
+    if(d)XSetClipRectangles(d,gc,0,0,&clip,1,Unsorted);
     line_color=0x55d9ae;
     for(int n=-4;n<=4;n++){
      for(int z=-8;z<-1;z++)line(d,back,gc,camera,eye,width/2,height,(XrVector3f){n,-1.5f,z},(XrVector3f){n,-1.5f,z+1});
@@ -147,9 +170,24 @@ int main(int argc,char **argv) {
     XrVector3f v[8];for(int i=0;i<8;i++)v[i]=(XrVector3f){(i&1)?0.6f:-0.6f,(i&2)?0.6f:-0.6f,(i&4)?-2.4f:-3.6f};
     for(int i=0;i<8;i++)for(int bit=1;bit<=4;bit*=2)if(!(i&bit))line(d,back,gc,camera,eye,width/2,height,v[i],v[i|bit]);
    }
-   XSetClipMask(d,gc,None);XSetFunction(d,gc,GXcopy);
-   XCopyArea(d,back,win,gc,0,0,width,height,0,0);XSync(d,False);
-   while(XPending(d)){
+   float turn=sqrtf(velocity.angularVelocity.x*velocity.angularVelocity.x+
+                   velocity.angularVelocity.y*velocity.angularVelocity.y+
+                   velocity.angularVelocity.z*velocity.angularVelocity.z)*57.29578f;
+   camera_panel_draw(now_ns()/1e9,camera);
+   ink_draw(now_ns()/1e9,camera);
+   hud_draw(now_ns()/1e9,turn);
+   if(guarded_session){double remaining;unsigned resets;
+    if(!hud_recovery(now_ns()/1e9,&remaining,&resets)||remaining<=0){running=0;break;}
+   }
+   if(d){XSetClipMask(d,gc,None);XSetFunction(d,gc,GXcopy);}
+   draw_end=now_ns();
+   if(d){
+    if(!getenv("MONTEREY_NO_PRESENT"))XCopyArea(d,back,win,gc,0,0,width,height,0,0);
+    XSync(d,False);
+   } else if(!framebuffer_present(&fb)){running=0;break;}
+   sync_end=now_ns();pose_ns+=pose_end-frame_start;draw_ns+=draw_end-pose_end;sync_ns+=sync_end-draw_end;
+   hud_sample(sync_end/1e9,(draw_end-pose_end)/1e6,(sync_end-draw_end)/1e6);
+   while(d && XPending(d)){
     XEvent e;XNextEvent(d,&e);
     if(e.type==KeyPress&&XLookupKeysym(&e.xkey,0)==XK_Escape)running=0;
     else if(e.type==ButtonPress || (e.type==KeyPress &&
@@ -160,11 +198,18 @@ int main(int argc,char **argv) {
   }
   frames++;
   long long delay=16666667-(now_ns()-frame_start);
-  if(delay>0){struct timespec pause={0,delay};nanosleep(&pause,NULL);}
-  if(frames%120==0){printf("Measured render loop %.1f fps\n",frames/((now_ns()-start)/1e9));fflush(stdout);}
+  /* Direct framebuffer blocks on the bounded submission worker: follow the
+   * actual scanout cadence instead of imposing an incompatible 60 Hz clock. */
+  if(!fb.pixels && delay>0){struct timespec pause={0,delay};nanosleep(&pause,NULL);}
+  if(frames%120==0){printf("Measured render loop %.1f fps; pose %.2f draw %.2f present %.2f ms\n",frames/((now_ns()-start)/1e9),pose_ns/1e6/frames,draw_ns/1e6/frames,sync_ns/1e6/frames);fflush(stdout);}
  }
  if(!stationary){xrRequestExitSession(session);xrDestroySpace(view);xrDestroySpace(local);xrDestroySession(session);xrDestroyInstance(instance);}
  alarm(0);
+ (void)ink_save();
+ free(camera_peek.map);free(camera_peek.pixels);
+ for(int i=0;i<2;i++)if(camera_controls.fd[i]>=0)close(camera_controls.fd[i]);
+ framebuffer_close(&fb);
+
  if(d){XFreePixmap(d,back);XFreeGC(d,gc);XDestroyWindow(d,win);XCloseDisplay(d);}
  printf("Clean stop after %d frames\n",frames);return frames>1?0:4;
 }

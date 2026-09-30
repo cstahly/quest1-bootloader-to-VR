@@ -2,7 +2,7 @@
 maintainer="Jose Molina <josemo360@yahoo.com>"
 pkgname=device-oculus-monterey
 pkgver=1
-pkgrel=34
+pkgrel=35
 pkgdesc="Oculus Quest 1"
 url="https://postmarketos.org"
 arch="aarch64"
@@ -36,6 +36,8 @@ source="
 	oculus-syncboss-dump.c
 	oculus-recovery.sudoers
 	oculus-refresh-rate
+	oculus-ipc-security
+	oculus-ipc-security.initd
 	oculus-rmtfs
 	oculus-rmtfs.initd
 	oculus-stock-runtime
@@ -73,6 +75,10 @@ package() {
 		"$pkgdir/usr/sbin/oculus-syncboss-dump"
 	install -Dm755 "$srcdir/oculus-usb-recovery" \
 		"$pkgdir/usr/sbin/oculus-usb-recovery"
+	install -Dm755 "$srcdir/oculus-ipc-security" \
+		"$pkgdir/usr/sbin/oculus-ipc-security"
+	install -Dm755 "$srcdir/oculus-ipc-security.initd" \
+		"$pkgdir/etc/init.d/oculus-ipc-security"
 	install -Dm755 "$srcdir/oculus-rmtfs" \
 		"$pkgdir/usr/sbin/oculus-rmtfs"
 	install -Dm755 "$srcdir/oculus-rmtfs.initd" \
@@ -96,6 +102,8 @@ package() {
 	install -Dm644 "$srcdir/interfaces" \
 		"$pkgdir/etc/network/interfaces"
 	mkdir -p "$pkgdir/etc/runlevels/default"
+	ln -s /etc/init.d/oculus-ipc-security \
+		"$pkgdir/etc/runlevels/default/oculus-ipc-security"
 	ln -s /etc/init.d/oculus-rmtfs \
 		"$pkgdir/etc/runlevels/default/oculus-rmtfs"
 	ln -s /etc/init.d/oculus-usb-recovery \
@@ -118,13 +126,15 @@ sha512sums="
 557a90defecb06e3a2e87c68bb3c13037855e1540c07ea776b8aa762da1e02ee866dde3d8013be301d127046a8467762851b1f067c7a54bffd6310831f893e62  oculus-device-access.initd
 db258ce2027ceb5b466f537a68582b8f3600ade2f102ef26d4d1295c15acccc6c02a01c5b8e27e8e375858fca9a90a3b36191057a1353bde033c0c296a89872c  oculus-controller
 53ffb356b5a2abaaadde4531ed5f8b10966f5edce5f307ed0d2ccb646e8a45bb8d75a460bb48a4d6bdd67cd2d44b51fa3fb0632649fc957fa85738e88da4f06c  oculus-controller-input
-d2941a6aaa62d2cb50c6074a37508801cc48ccbf6b50ed67c35d8493dc0f31e7870a57d2380bd2cc9a4a9c6dfd6805ca5fc8aaec8897416e9911da4fe8995be9  oculus-controller-uinput.c
+b6ca05666b30f7d57cedf6150922a4870d0f3353bb492b9f8889d1802ddca1a59bb9c7a67ca0b2a82900827d15867b46a9dd8829fe04870dbca34b6ba85ba8ba  oculus-controller-uinput.c
 59b2e27b4b44a2455a4244e47c23a9ec21c557757081f0a73abfdd04777bd973d2e8f7f23bb7884f18177945456c5269a188a15616a4808842043451873c81cf  oculus-controller.initd
 544be24f4a82e7a6bef8adf216884e00e598dcfdbf2bc2a179758f5a8396861e6ebdb542a7a529ce7c9c058281b7d2ec60aeb644cce91938ba7cc1feba22e1ed  oculus-syncboss-dump.c
 1819b4b91373e567200b73d32604e0bd3b658731ecae74ca886137d85d1b7f6d81e0f951461b70f1b560a86fd95dafb0a4e03a7837079fbcb2b812e30f36e96b  oculus-recovery.sudoers
 03649b9cb60f549d052c910057b5472f5285cd8371fa83404e106e4c2f16acc3157364c631378889a2e47acd654adfeca83312c66f8b19eed7468a33819fe4f6  oculus-refresh-rate
+31c66af7c3252663c9b254fe80dc8dc62631c73efc8e622fada40deaec08fc140661664c650b6e7e0fe1c3160e61429f878830ce002319696c128bc5016e51f3  oculus-ipc-security
+a5f0b7f64825c3d8022b77d1802a3a8c0169d817f18c610530e8095ebb3429b4d6bfa551cb49f89ab2ab0ba9ed48687a291047d6bee2a5796e9cbb760437a05a  oculus-ipc-security.initd
 eb9eee046d038b264f99f155e284f587fd3f7df3aa9c6e8c254d82382b9d631adaf886f590470e4ec2c61feb114b306fac11a9e89f2e867c9c88e39d8a874732  oculus-rmtfs
-3c6148b7679b6f13c5d26354ce99b0327dc6b0bab7add4922488086dc661529a6662034d66e41ed57d8bbc617f1ad8ed35958f29289281b68649b369e4821727  oculus-rmtfs.initd
+1ea4f36e4abfe5c2091bb46c626ba743ff4d635acd9280dcb94db0875bee37a2f98106e651130130f8a3fa06d5f243f3b0cf1a047aa34a4dfae2a0d5082eeb80  oculus-rmtfs.initd
 6f43286040486bc3173c5bc03370288f8a7a5e3a70416fdbb74b5a7cb023940f54c80d250b66dd45f64c76631c828c5ab8ebb46993c8764260a99bd11f0f1872  oculus-stock-runtime
 3322d260e8c11e3dcb52723c42c55cd6508035ab7365a18442c02d7e4b271050f4be7360e71e0aae285ab9896ee6a07105ad46151c12bc1d1672e2793db0781c  oculus-stock-runtime.initd
 f7bd069f1b0c5d87c39331040f0b50366b84a4ee3a54013b7b86595708221f3e581079c2037e68047a8c7fe70ad11080111baa82bb292bde593c0774d52ddfd4  oculus-usb-recovery

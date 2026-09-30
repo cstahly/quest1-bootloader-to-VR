@@ -1,0 +1,38 @@
+--- a/rmtfs.c
++++ b/rmtfs.c
+@@ -497,6 +497,8 @@
+ 
+ int main(int argc, char **argv)
+ {
++	setvbuf(stdout, NULL, _IONBF, 0);
++	setvbuf(stderr, NULL, _IONBF, 0);
+ 	struct sigaction action;
+ 	bool use_partitions = false;
+ 	bool read_only = false;
+@@ -528,13 +530,8 @@
+ 
+ 		/* enable sync for the mss rproc instance */
+ 		case 's':
+-			rprocfd = rproc_init();
+-			if (rprocfd < 0) {
+-				fprintf(stderr, "Failed to get rprocfd\n");
+-				return 1;
+-			}
+-
+-			break;
++			fprintf(stderr, "Diagnostic forbids processor startup (-s)\n");
++			return 2;
+ 
+ 		/* Partlabel slot suffix on A/B devices */
+ 		case 'S':
+@@ -561,6 +558,10 @@
+ 		}
+ 	}
+ 
++	if (!read_only || rprocfd >= 0) {
++		fprintf(stderr, "Diagnostic requires -r and forbids -s\n");
++		return 2;
++	}
+ 	sigemptyset(&action.sa_mask);
+ 	action.sa_handler = sig_int_handler;
+ 	action.sa_flags = 0;

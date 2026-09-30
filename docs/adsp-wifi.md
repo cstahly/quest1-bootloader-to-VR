@@ -1,4 +1,264 @@
+# Wi-Fi automatic startup VERIFIED — 2026-09-30 ~06:09 EDT
+
+Installed signed oculus-wifi-monterey 0.1-r2 and verified both manual service startup
+on a fresh boot and a subsequent boot with OpenRC default startup. The second test
+used no manual service, wpa_supplicant, or DHCP startup commands. At uptime88s:
+WPA2/CCMP association complete on 5GHz, DHCP address<HEADSET_WIFI_IP>/22, gateway<LAN_GATEWAY_IP>.
+Router and internet (1.1.1.1) each3/3 ping replies, zero loss, explicitly bound wlan0;
+DNS example.com resolves. SSH directly to the Wi-Fi address also passed at uptime113s.
+Modem ONLINE, hardware watchdog disable=0. Stable locally administered MAC preserved.
+Private network profile remains0600; no password/PSK saved in repo or these notes.
+
+Evidence (private working directory /Users/<user>/work/quest-pmos-bringup):
+- wifi-source/wifi-r2-coldboot-autostart.log
+- wifi-source/wifi-r2-lan-ssh.log
+- wifi-source/oculus-wifi-monterey-0.1-r2.apk (signed build)
+
+OpenRC: oculus-wifi enabled in default; dependency cache refreshed. Existing real vs
+virtual swap warning is unrelated. r2 removes unsupported wpa_supplicant -f flag.
+Canonical runtime and packaged copies match; local APKBUILD source SHA512 checks,
+sh syntax and git diff --check pass. Package build/shared-memory tests passed.
+Device package revision35 IPC helpers were installed manually; its APK was NOT
+rebuilt/reinstalled. APKBUILD source checksum ordering has been corrected locally.
+
+IMPORTANT: existing 300s recovery timer remains unchanged and will return this boot
+to fastboot. Wi-Fi works automatically during pmOS boots; this is NOT yet an
+unattended persistent everyday OS session. Do not remove guards just to keep Wi-Fi
+up. Do not restart/stop the Wi-Fi daemon in place: its open modem FD is retained
+until recovery reboot. No desktop enabled; no modem/boot-chain/NV/factory partitions
+flashed. RMTFS backing writes remain RAM-only; owner firmware stays private.
+
+Hourly continuation automation continue-quest-wi-fi-bring-up is PAUSED because its
+success condition was met. Do not keep rebooting/testing automatically. User can
+resume native VR/OS integration next. Source changes remain uncommitted for the
+requested separate sorting/commit agent; preserve unrelated renderer/Monado work.
+
+# Connected Wi-Fi — 2026-09-30 ~05:58
+
+User supplied the target network/credential privately. DO NOT copy its password or
+PSK into repo, logs, notes, or handoffs. Root-only profile stored on device at
+/etc/wpa_supplicant/wpa_supplicant-wlan0.conf (0600), temporary host copy removed.
+Connected to the configured network at5240MHz (802.11ac, WPA2-PSK/CCMP), DHCP lease obtained.
+Router and internet pings each3/3 replies with0% loss, DNS works.
+Evidence W/wifi-source/wifi-first-connectivity.log and wpa-first-status.log (no keys).
+Modem remains ONLINE. Recovery watchdog unchanged; desktop disabled.
+
+Signed package oculus-wifi-monterey0.1-r1 installed. Owner firmware installed under
+/usr/share/oculus-wifi/firmware, chmod700 directory/go-rwx files; helper stages /run.
+Package runtime initial Wi-Fi initialization succeeded, but Alpine wpa_supplicant
+omits -f logging flag. Manually starting wpa without-f then DHCP produced success.
+Source fixed to -B -s with startup output redirection; package revision2 rebuilding.
+Manual network status file from r1 can remain wifi-authenticating despite actual
+working connection; use wpa_cli/ip to verify. Next boot with r2 fixes startup.
+Saved local MAC at/etc/oculus-wifi/mac-address is used instead of driver fallback.
+
+NEXT: install signedr2, fresh boot/manual rc-service oculus-wifi start before150s,
+verify automatic association/DHCP, enable default init only after that passes,
+then coldboot verify automatic startup. Keep recovery watchdog. No firmware/NV flash.
+Hourly continuation automation continue-quest-wi-fi-bring-up active; stop when
+Wi-Fi startup and connection are verified, as its prompt directs.
+
+# Wi-Fi radio works — 2026-09-30 ~05:49
+
+wlan0 and p2p0 appeared after stock cnss-daemon ran in the restricted RAM chroot.
+ICNSS FW_READY at140.611, DRIVER_PROBED. iw scan succeeded: 11 BSS entries across
+2412/2437/5240/5500MHz. Evidence W/wifi-source/first-wifi-scan.log (private SSIDs),
+cnss-relative-kmsg-live.log and cnss-relative-status.log. iw+wpa_supplicant installed
+from signed Alpine APKs transferred via Kali (only four new packages, no upgrades).
+Association/internet NOT tested: no preexisting network profile found yet.
+
+cnss chroot problem solved: /run is nodev, so mknod /dev/null inside it is unusable.
+Bind ONLY /dev/null,/dev/random,/dev/urandom from host to corresponding root nodes.
+No block devices/persist exposed. Also include stock lib64/vndk-29 and vndk-sp-29.
+After that, cnss-daemon -n -dd stays running, talks native IPC and initializes WLAN.
+W/wifi-source/prepare-cnss-root.sh contains fixed setup; it currently runs help at
+end (exit1 on expected help). Runtime start: env LD_PRELOAD= LD_LIBRARY_PATH with
+chroot paths, nohup chroot /run/quest-cnss-root /apex/com.android.runtime/bin/linker64
+/vendor/bin/cnss-daemon -n -dd. Data/vendor/wifi and calibration outputs remain RAM.
+Read-only persist mount /run/quest-persist-ro has no WLAN/MAC filename matches;
+factory MAC currently NOT recovered, driver uses fallback 00:0a:f5:16:ce:65.
+Do not assume fallback MAC is unique for production use.
+
+NEXT: package/repeat startup on a fresh boot, preserve watchdog. Stage firmware
+from owner backup in persistent pmOS rootfs data if needed; never flash modem/NV
+partitions. Build source in repo; owner firmware/binaries stay outside Git.
+Keep -r shadows and relative offsets, IRSC init, mapper, TFTP, CNSS before modem vote.
+No association claims without actual association. User is offline; continue work.
+
 # Quest 1 (monterey) pmOS — ADSP / Wi-Fi bring-up handoff
+
+# Breakthrough checkpoint — 2026-09-30 ~05:44
+
+USER OFFLINE: explicitly authorized continued work overnight toward Wi-Fi.
+Heartbeat automation continue-quest-wi-fi-bring-up active hourly in this task.
+
+Early modem crash cause FOUND AND FIXED in a RAM-only diagnostic build:
+RMTFS requests use shared-buffer-relative offsets (first read offset0x200), but
+upstream rmtfs treats them as absolute physical addresses. Crash-persistent logs
+show failed sector1 read immediately before fatal. New explicit opt-in
+RMTFS_MSM8998_RELATIVE_OFFSETS=1 translates bounded offsets into the UIO buffer
+0xfca00000/2MiB. Preserves -P -r; diagnostic binary rejects missing -r and -s.
+Patches in patches/rmtfs; unit test relative/absolute bounds/overflow passes;
+on-device metadata and relative sector reads pass for all 4 standard NV areas.
+No persistent NV writes. Unknown OEM_1/OEM_2 requests are optional so far.
+
+With fix + native mapper + fixed TFTP, MODEM STAYS ONLINE (uptime120..311),
+TFTP served the entire 3184968-byte wlanmdsp.mbn, WLAN PD up, ICNSS QMI connected.
+ICNSS indication/MSA/cap exchanges succeed but no FW_READY event and no wlan0 yet.
+Watchdog remains unchanged; latest boot about to return to fastboot normally.
+Evidence W/wifi-source/relative-modem-kmsg-live.log, relative-test-prepare.log,
+relative-wlan-status.log. Previous crash evidence kmsg-storage-diagnostic-live.log
+and kmsg-storage-diagnostic-pstore.tar (RMTFS failed read captured in kernel log).
+
+Current next step: stock cnss-daemon likely supplies board/calibration data.
+Stock helper requires system/lib64/vndk-29 and vndk-sp-29 in LD_LIBRARY_PATH;
+outside chroot -h prints help (cnss-help-vndk.log). A restricted /run/quest-cnss-root
+was constructed: stock system bind read-only, vendor bin/lib symlinks, firmware
+bdwlan files copied, data/vendor/wifi RAM-only, dev only null/random/urandom,
+proc read-only. NO persist/block devices exposed. Chroot linker --help works,
+but cnss-daemon help/run exits with no output; diagnose with strace next.
+W/wifi-source/prepare-cnss-root.sh updated vndk paths. strace downloaded from Kali.
+Do not run unrestricted stock cnss-daemon against persistent data paths.
+
+Latest safe startup archive W/wifi-source/relative-test-stage.tar contains all
+firmware/helpers (NOT Git), prepare-relative-modem-test.sh (does not vote).
+It stages services, stops installed rmtfs, starts RAM rmtfs-debug with relative
+flag, runs local tests. Then guarded-debug-modem-vote.sh manually before uptime150.
+Discover IPC ports with ANCHORED service regex /^0x... /, not matching instance/port.
+Stock WLAN boot sysfs ignores input contents, ON and1 equivalent (source checked).
+All source work uncommitted. Need persist/package fixes only after validation.
+
+
+## Guarded TFTP modem test — 2026-09-30 ~05:28
+
+Fresh boot: IPC policy ready; firmware SHA256 checks all passed; TFTP protocol
+suite passed; mapper answered wlan/fw -> msm/modem/wlan_pd instance180; WLAN
+boot trigger returned success. rmtfs was running /usr/bin/rmtfs -P -r -v.
+Modem vote began at uptime108.620; MBA boot at108.692; modem out of reset108.843;
+QMI domain180108.892 and SSCTL108.893; fatal108.949 (same unknown SMEM reason).
+Thus TFTP compatibility is fixed but does NOT solve the early modem crash.
+No wlan0 demonstrated. Recovery VERIFIED: SSH returned on normal kernel 4.4.205-perf; IPC marker
+present, rmtfs service started, modem OFFLINING. Saved tftp-modem-pstore.tar
+and extracted pstore; panic at109.050 confirms modem crash. No repeat vote planned
+without a new concrete cause. Guarded image/recovery watchdog unchanged.
+
+Evidence W/wifi-source/tftp-modem-final-prepare.log, tftp-final-kmsg-live.log,
+tftp-final-services-live.log. Service tail used 1s polling, so absence of logged
+modem requests is NOT proof none occurred in the ~0.1s before fatal. The attempted
+foreground SSH-PTY rmtfs session ended immediately; nohup replacement was verified
+running before vote, but its transient /run log was not continuously streamed.
+A future diagnostic should flush/capture rmtfs and TFTP events synchronously.
+All staging stayed in tmpfs; all backing NV reads retained -r, no firmware flash.
+
+
+## TFTP compatibility checkpoint — 2026-09-30 ~05:26
+
+On-device protocol tests now pass: fixture read, RAM-only write, read-only write
+rejection, 1500-byte multi-block read and exact 1024-byte boundary (empty final
+block). Evidence: W/wifi-source/tftp-protocol-fixed.log. Modem stayed OFFLINING.
+Stock libqipcrtr4msmipc v0.1 translates sendto/recvfrom, but not connect. Original
+server received RRQ then failed connect. patches/tqftpserv switches the server to
+explicit sendto destinations, preserving sender checks on replies. Also corrects
+upstream no-option WRQ to ACK0 (it attempted reading an O_WRONLY fd), no-rsize
+multi-block reads/EOF, and stdout flushing. ARM compile -Wall -Werror passed.
+Host root/protection test passed. Nothing installed as an autostart service.
+The subsequent guarded boot/test is recorded in the latest checkpoint above.
+
+
+
+## Live bring-up results — 2026-09-30, through ~05:14
+
+The complete stock modem firmware now passes PIL/MBA authentication and exits
+reset. This fixes the earlier missing-segment prerequisite, but the modem then
+signals fatal within roughly 0.2 seconds. The kernel's existing SYSTEM restart
+policy panics/reboots the headset; it recovered to USB SSH after each test.
+No wlan0 yet. Firmware staging was exclusively in /run (tmpfs), rmtfs retained
+-P -r, and no boot/firmware/NV partition was flashed or written.
+
+A second, independently verified blocker was found and fixed: missing IPC router
+security initialization. A local service-locator request was stuck inside
+wait_for_irsc_completion in msm_ipc_router_sendmsg. Stock init starts irsc_util
+with vendor/etc/sec_config as root. Running that exact stock tool/policy unblocks
+IPC, and the native pd-mapper now successfully answers wlan/fw with
+msm/modem/wlan_pd, instance180 through libqipcrtr4msmipc. This does not boot modem.
+
+Repo/device now include oculus-ipc-security helper and init service; rmtfs start_pre
+also enforces initialization, to handle old/future-dated OpenRC dependency caches.
+The helper explicitly clears inherited LD_PRELOAD when invoking Android's linker:
+otherwise rmtfs's musl IPC shim contaminates the bionic process and startup fails.
+The original rmtfs unit is saved on-device as oculus-rmtfs.pre-ipc-security.
+Package source revision35 updated; signed device package not built/installed yet.
+Cold-boot verification PASSED: ipc-final-coldboot.log at 94s shows the policy
+marker, rmtfs started, and modem still OFFLINING.
+
+With IRSC + mapper initialized, kernel logs show connection to WLAN domain180,
+then the same modem fatal. A diagnostic kernel added a private AP/modem SMEM
+lookup for the failure reason; both common and private lookups failed. That
+kernel was booted TEMPORARILY with fastboot boot, never flashed. Its device tree,
+ramdisk/watchdogs and boot arguments exactly matched the working image. After
+its crash, the headset returned to installed kernel #4. Diagnostic source is in
+patches/kernel; don't enable repeated modem voting based on that patch.
+
+Stock init also starts a TFTP firmware-file server; this is absent from the port.
+A native test server has been built from linux-msm/tqftpserv pin
+c2559a26098f6d2b36a946ef0b6ad02223264c3e with a bounded translator:
+firmware reads from /run/quest-wifi-firmware then /lib/firmware; writes only below
+/run/quest-tftp-write, no persist/NV paths. Root/path tests pass (traversal,
+absolute escapes, symlinks, read-only writes rejected). On-device protocol test
+PASSED after the fixes below. A TFTP-backed test was subsequently run; see latest checkpoint above.
+
+Evidence in W=/Users/<user>/work/quest-pmos-bringup/wifi-source:
+- after-modem-pstore/ and irsc-pstore/: saved first/second kernel panics.
+- r4-modem-kmsg-live.log and r4-modem-pstore.tar: diagnostic fallback result.
+- irsc-and-mapper-query.log: successful local domain lookup.
+- ipc-preload-fix.log: corrected IPC helper/rmtfs startup.
+- Native mapper patch and probe in patches/pd-mapper and tools/wifi.
+
+
+## Firmware and rmtfs audit — 2026-09-30 (latest)
+
+The wearer accepted the optimized tracked diagnostic; Wi-Fi is the next priority.
+Wi-Fi is still unavailable. No modem vote or firmware load was performed in this audit.
+
+- Live rootfs inspection found no `modem.*` or `mba.*` firmware. The installed
+  firmware archive also omits them. The owner's untouched `modem_b.img` contains
+  MBA and a complete split modem ELF. `tools/inspect-fat16-firmware.py
+  --verify-modem IMAGE` checks FAT16 geometry, chains, hashes and ELF segment
+  lengths without mounting, extracting, or changing the backup.
+- All 22 loadable ELF segments pass, including `modem.b19` (434064 bytes).
+  Segments 12, 16 and 23 legitimately have no file payload. The address span is
+  exactly `0x8cc00000..0x8fc00000` (48 MiB), matching the LIVE device-tree modem
+  reservation. The live MBA reservation is `0x8b900000`, 2 MiB. This checks
+  completeness/layout only, not signature acceptance or safe startup.
+- **Correction to old rmtfs notes:** installed rmtfs is v1.3. `-P` selects raw
+  partitions under `/dev/disk/by-partlabel`; it does NOT mean "no PIL". Automatic
+  remote-processor startup requires `-s`, which is absent. `-r` opens backing
+  partitions read-only and services writes in a RAM shadow. Keep `-P -r`; dropping
+  `-r` is unnecessary and would remove NV protection. Live modemst1/modemst2/fsg/fsc
+  links resolve to sdf1/sdf2/sdf3/sdf4.
+- Primary port documentation reports that an earlier modem vote reached MBA,
+  failed loading `modem.b19` through direct firmware loading/userspace fallback,
+  then wedged during vendor shutdown until the hardware watchdog fired. Missing
+  files are a concrete prerequisite failure today, but not proof of the earlier
+  failure's sole cause. Audit `request_firmware_into_buf` and failure shutdown
+  before any modem vote; a userspace timeout cannot bound a hung kernel/SCM call.
+- Exact kernel source has default PBL/MBA timeout 1000 ms and modem-auth timeout
+  10000 ms (both confirmed live). A special PIL IMEM marker can disable polling
+  timeouts; no disable-timeouts message appeared in captured boot logs. This
+  does not prove every secure-monitor or cleanup path is bounded.
+- No firmware was staged to the headset, no NV/boot-chain partitions changed,
+  and the recovery watchdog remains armed.
+
+Evidence outside Git: `/Users/<user>/work/quest-pmos-bringup/wifi-source/`, including
+`stock-modem-validation.txt`, `stock-modem-firmware-index.tsv`, `live.dtb`,
+`live-modem-dt.txt`, `device-preflight.log`, and exact kernel source. Stock blobs
+and the live DTB are not committed.
+
+Primary references:
+- [rmtfs v1.3 flags](https://github.com/linux-msm/rmtfs/blob/v1.3/rmtfs.c)
+- [rmtfs v1.3 RAM shadow](https://github.com/linux-msm/rmtfs/blob/v1.3/storage.c)
+- [Port's prior modem failure report, section 5](https://github.com/Block-Flock/pmaports-oculus-monterey/blob/master/docs/bringup.md)
+
 
 ## Verified update — 2026-09-30 (supersedes the hypothesis below)
 
@@ -93,18 +353,18 @@ The ADSP PIL node and its complaint:
   is a *non-fatal* warning (it only disables full ramdump; PIL can still boot the
   subsystem). Determine empirically: does ADSP reach ONLINE when something votes it?
 
-NOT needed (do not chase):
-- `pil-q6v5-mss 4080000.qcom,mss: No pas_id found.`  ← the MODEM. It's the upstream
-  maintainer's wedge and is **not** required for Wi-Fi. Leave it alone.
+Historical ADSP-only hypothesis (disproved by MODEMUW.JSN and live domain lookup):
+- The modem hosts wlan_pd instance 180; its bring-up IS relevant to Wi-Fi.
+  Keep guarded, read-only tests; see current results above.
 - `subsys-pil-tz cce0000.qcom,venus: Failed to locate venus.mdt(rc:-11)` ← video, separate.
 
 Firmware all present in `/lib/firmware`: `adsp.mdt`, `adsp.b00`, `adspua.jsn`,
 `wlanmdsp.mbn`, `bdwlan.*`. So ADSP PIL has its firmware locally — it likely does
 **not** need rmtfs to serve it.
 
-rmtfs currently runs `/usr/bin/rmtfs -P -r` (supervise-daemon): **-P = no PIL,
--r = read-only.** Deliberate (the port avoids PIL/modem). Revisit only if ADSP proves
-to need rmtfs-served firmware or a writable share (probably it doesn't).
+rmtfs runs `/usr/bin/rmtfs -P -r`: **-P selects raw partition backing; -r
+keeps backing files read-only and shadows writes in RAM.** No `-s` means it does
+not automatically start a remote processor. Keep `-r` for all bring-up tests.
 
 ---
 
@@ -157,10 +417,10 @@ lpass/adsp PIL node's `reg`/`qcom,*` properties against a known-good MSM8998 dow
 DT (e.g. other 8998 pmOS ports / the stock Quest DT). This is the deep path; only take
 it after confirming §2 can't vote ADSP up.
 
-### 5. rmtfs (probably NOT needed, test last)
-Only if ADSP boot complains about missing firmware it expects rmtfs to serve: try
-rmtfs writable (drop `-r`) and/or with PIL. ADSP firmware is local, so this is a
-long shot; don't start here.
+### 5. rmtfs — preserve read-only backing
+The old suggestion to drop `-r` is withdrawn. Preserve `-P -r`; modem firmware
+is staged separately in tmpfs. Diagnose protocol requests without enabling
+persistent NV writes or automatic processor startup.
 
 **Success = `wlan0` in `ip link`.** Then `iw dev`, scan, associate.
 

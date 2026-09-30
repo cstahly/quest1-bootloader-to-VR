@@ -1,0 +1,957 @@
+--- a/tests/tests_monterey_protocol.cpp
++++ b/tests/tests_monterey_protocol.cpp
+@@ -8,6 +8,9 @@
+ #include "xrt/xrt_device.h"
+ #include "math/m_api.h"
+ #include <limits>
++#include <vector>
++#include <cmath>
++#include <cstdlib>
+ 
+ #include <array>
+ #include <cstdint>
+@@ -36,6 +39,26 @@
+ 	std::memcpy(&bits, &value, sizeof(bits));
+ 	put_le32(data, bits);
+ }
++
++/* Synthetic monotonic lens grid: no proprietary calibration in tests. */
++struct TestLensFile {
++ char path[64]="/tmp/monterey-lens-XXXXXX";
++ std::string old;bool had_old=false;
++ TestLensFile(){
++  if(const char *v=getenv("MONTEREY_DISTORTION_MESH")){had_old=true;old=v;}
++  std::vector<uint8_t> bytes(52368);
++  put_le32(bytes.data(),0x56347807);put_le32(bytes.data()+24,32);put_le32(bytes.data()+28,32);
++  put_le32(bytes.data()+48,2880);put_le32(bytes.data()+52,1600);
++  for(int i=0;i<8;i++)put_float(bytes.data()+64+i*4,45.f);
++  for(int y=0;y<33;y++)for(int e=0;e<2;e++)for(int x=0;x<33;x++)for(int c=0;c<3;c++){
++   size_t off=96+(((y*2+e)*33+x)*6+c*2)*4;
++   put_float(bytes.data()+off,(x-16)/16.f);put_float(bytes.data()+off+4,(y-16)/16.f);
++  }
++  int fd=mkstemp(path);REQUIRE(fd>=0);REQUIRE(write(fd,bytes.data(),bytes.size())==(ssize_t)bytes.size());close(fd);
++  setenv("MONTEREY_DISTORTION_MESH",path,1);
++ }
++ ~TestLensFile(){unlink(path);if(had_old)setenv("MONTEREY_DISTORTION_MESH",old.c_str(),1);else unsetenv("MONTEREY_DISTORTION_MESH");}
++};
+ 
+ TEST_CASE("Monterey SyncBoss HMD IMU packet")
+ {
+@@ -79,6 +102,7 @@
+ 
+ TEST_CASE("Monterey device requires real IMU and brackets its sensor lifecycle")
+ {
++ TestLensFile calibration;
+ 	std::array<uint8_t, 42> record{};
+ 	record[0] = 1;
+ 	record[1] = 3;
+@@ -116,9 +140,27 @@
+ 	REQUIRE(hmd != nullptr);
+ 	CHECK(hmd->supported.orientation_tracking);
+ 	CHECK_FALSE(hmd->supported.position_tracking);
++
+ 	xrt_space_relation pose{};
+ 	hmd->get_tracked_pose(hmd, XRT_INPUT_GENERIC_HEAD_POSE, os_monotonic_get_ns(), &pose);
+ 	CHECK((pose.relation_flags & XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT) != 0);
++	CHECK((pose.relation_flags & XRT_SPACE_RELATION_POSITION_VALID_BIT) != 0);
++	CHECK((pose.relation_flags & XRT_SPACE_RELATION_POSITION_TRACKED_BIT) == 0);
++	CHECK(pose.pose.position.x == 0.f);
++	CHECK(pose.pose.position.y == 0.f);
++	CHECK(pose.pose.position.z == 0.f);
++ for(unsigned eye=0;eye<2;eye++){
++  xrt_uv_triplet uv{};
++  float center=(eye?620.f:820.f)/1440.f;
++  REQUIRE(hmd->compute_distortion(hmd,eye,center,.5f,&uv)==XRT_SUCCESS);
++  CHECK(uv.r.x==Catch::Approx(.5f));CHECK(uv.g.y==Catch::Approx(.5f));
++  REQUIRE(hmd->compute_distortion(hmd,eye,center,.25f,&uv)==XRT_SUCCESS);
++  CHECK(uv.g.y==Catch::Approx(.25f)); // top screen maps to upward ray
++  REQUIRE(hmd->compute_distortion(hmd,eye,center+.1f,.5f,&uv)==XRT_SUCCESS);
++  CHECK(uv.b.x==Catch::Approx(.6f));
++  CHECK(hmd->hmd->distortion.fov[eye].angle_up==Catch::Approx(.785398163f));
++ }
++
+ 	int producer_status = 0;
+ 	REQUIRE(waitpid(producer, &producer_status, 0) == producer);
+ 	CHECK(WIFEXITED(producer_status));
+--- a/src/xrt/drivers/CMakeLists.txt
++++ b/src/xrt/drivers/CMakeLists.txt
+@@ -109,6 +109,8 @@
+ 	add_library(
+ 		drv_monterey STATIC
+ 		monterey/monterey_device.c
++		monterey/monterey_lens.c
++		monterey/monterey_lens.h
+ 		monterey/monterey_interface.h
+ 		monterey/monterey_protocol.c
+ 		monterey/monterey_protocol.h
+--- a/src/xrt/drivers/monterey/monterey_device.c
++++ b/src/xrt/drivers/monterey/monterey_device.c
+@@ -3,6 +3,7 @@
+ 
+ #include "monterey_interface.h"
+ #include "monterey_protocol.h"
++#include "monterey_lens.h"
+ 
+ #include "math/m_api.h"
+ #include "math/m_imu_3dof.h"
+@@ -51,6 +52,7 @@
+ 	struct os_mutex fusion_mutex;
+ 	struct m_imu_3dof fusion;
+ 	struct monterey_imu_calibration calibration;
++	struct monterey_lens_mesh lens;
+ 	int64_t last_received_ns;
+ 	struct xrt_space_relation last_relation;
+ 	int64_t last_update_ns;
+@@ -66,6 +68,26 @@
+ monterey_device(struct xrt_device *xdev)
+ {
+ 	return (struct monterey_device *)xdev;
++}
++
++/* Monado screen UV is top-down; stock ray grid is bottom-up. */
++static xrt_result_t
++monterey_compute_distortion(struct xrt_device *xdev, uint32_t eye, float u, float v,
++                            struct xrt_uv_triplet *out)
++{
++ struct monterey_device *d=monterey_device(xdev);
++ if(eye>1||!isfinite(u)||!isfinite(v))return XRT_ERROR_DEVICE_CREATION_FAILED;
++ float gx=(u*1440.f-d->lens.center_shift[eye])/45.f,gy=(1.f-v)*32.f;
++ struct xrt_vec2 *channels[3]={&out->r,&out->g,&out->b};
++ struct xrt_fov f=xdev->hmd->distortion.fov[eye];
++ float left=tanf(f.angle_left),right=tanf(f.angle_right),up=tanf(f.angle_up),down=tanf(f.angle_down);
++ for(int c=0;c<3;c++){
++  float ray[2];
++  if(!monterey_lens_ray(&d->lens,eye,c,gx,gy,ray)){*channels[c]=(struct xrt_vec2){-2,-2};continue;}
++  channels[c]->x=(ray[0]-left)/(right-left);
++  channels[c]->y=(up-ray[1])/(up-down);
++ }
++ return XRT_SUCCESS;
+ }
+ 
+ static bool
+@@ -132,9 +154,10 @@
+ 	d->last_relation.pose.orientation = d->fusion.rot;
+ 	monterey_imu_world_angular_velocity(&d->fusion.rot, &sample.angular_velocity_rad_s,
+ 	                                   &d->calibration.gyro_bias, &d->last_relation.angular_velocity);
++	/* Valid fixed origin for 3DoF OpenXR views; position is NOT tracked. */
+ 	d->last_relation.relation_flags = (enum xrt_space_relation_flags)(
+ 	    XRT_SPACE_RELATION_ORIENTATION_VALID_BIT | XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT |
+-	    XRT_SPACE_RELATION_ANGULAR_VELOCITY_VALID_BIT);
++	    XRT_SPACE_RELATION_ANGULAR_VELOCITY_VALID_BIT | XRT_SPACE_RELATION_POSITION_VALID_BIT);
+ 	d->last_update_ns = now_ns;
+ 	d->last_device_timestamp = sample.timestamp;
+ 	d->sample_count++;
+@@ -267,30 +290,6 @@
+ 	}
+ 	os_thread_helper_name(&d->thread, "Monterey SyncBoss");
+ 
+-	d->stream_fd = open(stream_path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+-	if (d->stream_fd < 0) {
+-		MONTEREY_ERROR(d, "Cannot open %s: %s", stream_path, strerror(errno));
+-		goto fail;
+-	}
+-	d->command_fd = open(command_path, O_WRONLY | O_CLOEXEC);
+-	if (d->command_fd < 0) {
+-		MONTEREY_ERROR(d, "Cannot open %s: %s", command_path, strerror(errno));
+-		goto fail;
+-	}
+-	if (!write_exact_command(d->command_fd, imu_enable_command)) {
+-		MONTEREY_ERROR(d, "Failed to enable HMD IMU: %s", strerror(errno));
+-		goto fail;
+-	}
+-	d->imu_enabled = true;
+-
+-	const int64_t deadline_ns = os_monotonic_get_ns() + MONTEREY_STARTUP_TIMEOUT_NS;
+-	while (os_monotonic_get_ns() < deadline_ns && !read_and_update(d, MONTEREY_POLL_TIMEOUT_MS)) {
+-	}
+-	if (d->sample_count == 0) {
+-		MONTEREY_ERROR(d, "No stable HMD IMU window during startup; hold headset still and retry");
+-		goto fail;
+-	}
+-
+ 	const float refresh_rate = read_refresh_rate();
+ 	d->base.hmd->screens[0].nominal_frame_interval_ns = time_s_to_ns(1.0f / refresh_rate);
+ 	d->base.hmd->blend_modes[0] = XRT_BLEND_MODE_OPAQUE;
+@@ -308,7 +307,46 @@
+ 		MONTEREY_ERROR(d, "Failed to configure 2880x1600 stereo panel");
+ 		goto fail;
+ 	}
+-	u_distortion_mesh_set_none(&d->base);
++	const char *lens_path=getenv("MONTEREY_DISTORTION_MESH");
++ if(!lens_path)lens_path="/var/lib/monado/monterey/distortion-mesh.bin";
++ if(!monterey_lens_load(&d->lens,lens_path)){
++  MONTEREY_ERROR(d,"Missing or invalid stock lens calibration: %s",lens_path);goto fail;
++ }
++ for(int eye=0;eye<2;eye++){
++  const float *a=d->lens.fov_degrees[eye];const float rad=(float)(M_PI/180.0);
++  d->base.hmd->distortion.fov[eye]=(struct xrt_fov){.angle_left=-a[2]*rad,.angle_right=a[3]*rad,.angle_up=a[0]*rad,.angle_down=-a[1]*rad};
++ }
++ d->base.compute_distortion=monterey_compute_distortion;
++ d->base.hmd->distortion.models=XRT_DISTORTION_MODEL_COMPUTE;
++ d->base.hmd->distortion.preferred=XRT_DISTORTION_MODEL_COMPUTE;
++ u_distortion_mesh_fill_in_compute(&d->base);
++ MONTEREY_INFO(d,"Loaded stock RGB lens mesh and asymmetric view FOVs");
++
++
++	d->stream_fd = open(stream_path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
++	if (d->stream_fd < 0) {
++		MONTEREY_ERROR(d, "Cannot open %s: %s", stream_path, strerror(errno));
++		goto fail;
++	}
++	d->command_fd = open(command_path, O_WRONLY | O_CLOEXEC);
++	if (d->command_fd < 0) {
++		MONTEREY_ERROR(d, "Cannot open %s: %s", command_path, strerror(errno));
++		goto fail;
++	}
++	if (!write_exact_command(d->command_fd, imu_enable_command)) {
++		MONTEREY_ERROR(d, "Failed to enable HMD IMU: %s", strerror(errno));
++		goto fail;
++	}
++	d->imu_enabled = true;
++
++	const int64_t deadline_ns = os_monotonic_get_ns() + MONTEREY_STARTUP_TIMEOUT_NS;
++	while (os_monotonic_get_ns() < deadline_ns && !read_and_update(d, MONTEREY_POLL_TIMEOUT_MS)) {
++	}
++	if (d->sample_count == 0) {
++		MONTEREY_ERROR(d, "No stable HMD IMU window during startup; hold headset still and retry");
++		goto fail;
++	}
++
+ 
+ 	u_var_add_root(d, "Oculus Quest 1", true);
+ 	u_var_add_log_level(d, &d->log_level, "log_level");
+--- a/src/xrt/compositor/CMakeLists.txt
++++ b/src/xrt/compositor/CMakeLists.txt
+@@ -211,6 +211,10 @@
+ 		)
+ 	target_include_directories(comp_main PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+ 
++	if(XRT_BUILD_DRIVER_MONTEREY)
++		target_sources(comp_main PRIVATE main/comp_window_monterey_fb.c)
++	endif()
++
+ 	if(XRT_HAVE_XCB)
+ 		target_sources(comp_main PRIVATE main/comp_window_xcb.c)
+ 		target_include_directories(comp_main SYSTEM PRIVATE ${XCB_INCLUDE_DIRS})
+--- a/src/xrt/compositor/main/comp_settings.c
++++ b/src/xrt/compositor/main/comp_settings.c
+@@ -24,6 +24,7 @@
+ DEBUG_GET_ONCE_BOOL_OPTION(force_nvidia, "XRT_COMPOSITOR_FORCE_NVIDIA", false)
+ DEBUG_GET_ONCE_OPTION(nvidia_display, "XRT_COMPOSITOR_FORCE_NVIDIA_DISPLAY", NULL)
+ DEBUG_GET_ONCE_NUM_OPTION(vk_display, "XRT_COMPOSITOR_FORCE_VK_DISPLAY", -1)
++DEBUG_GET_ONCE_BOOL_OPTION(force_monterey_fb, "XRT_COMPOSITOR_MONTEREY_FB", false)
+ DEBUG_GET_ONCE_BOOL_OPTION(force_xcb, "XRT_COMPOSITOR_FORCE_XCB", false)
+ DEBUG_GET_ONCE_BOOL_OPTION(force_wayland, "XRT_COMPOSITOR_FORCE_WAYLAND", false)
+ DEBUG_GET_ONCE_NUM_OPTION(force_gpu_index, "XRT_COMPOSITOR_FORCE_GPU_INDEX", -1)
+@@ -135,6 +136,8 @@
+ 	s->viewport_scale = debug_get_num_option_scale_percentage() / 100.0;
+ 
+ 
++	if(debug_get_bool_option_force_monterey_fb()){s->target_identifier="monterey_fb";return;}
++
+ 	s->nvidia_display = debug_get_option_nvidia_display();
+ 	if (debug_get_bool_option_force_nvidia()) {
+ 		s->target_identifier = "x11_direct_nvidia";
+--- a/src/xrt/compositor/main/comp_compositor.c
++++ b/src/xrt/compositor/main/comp_compositor.c
+@@ -753,6 +753,9 @@
+  */
+ 
+ const struct comp_target_factory *ctfs[] = {
++#ifdef XRT_BUILD_DRIVER_MONTEREY
++    &comp_target_factory_monterey_fb,
++#endif
+ #if defined VK_USE_PLATFORM_WAYLAND_KHR && defined XRT_HAVE_WAYLAND_DIRECT
+     &comp_target_factory_direct_wayland,
+ #endif
+--- a/src/xrt/compositor/main/comp_window.h
++++ b/src/xrt/compositor/main/comp_window.h
+@@ -15,6 +15,7 @@
+ #include "main/comp_compositor.h"
+ 
+ #include "xrt/xrt_config_os.h"
++#include "xrt/xrt_config_drivers.h"
+ 
+ #ifdef __cplusplus
+ extern "C" {
+@@ -138,6 +139,10 @@
+ extern const struct comp_target_factory comp_target_factory_mswin;
+ #endif // XRT_OS_WINDOWS
+ 
++#ifdef XRT_BUILD_DRIVER_MONTEREY
++extern const struct comp_target_factory comp_target_factory_monterey_fb;
++#endif
++
+ #ifdef __cplusplus
+ }
+ #endif
+--- /dev/null
++++ b/src/xrt/drivers/monterey/monterey_lens.c
+@@ -0,0 +1,69 @@
++#include "monterey_lens.h"
++#include <math.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++static uint32_t le32(const unsigned char*p){return (uint32_t)p[0]|(uint32_t)p[1]<<8|(uint32_t)p[2]<<16|(uint32_t)p[3]<<24;}
++static float lefloat(const unsigned char*p){uint32_t u=le32(p);float f;memcpy(&f,&u,4);return f;}
++static float clamp(float x,float a,float b){return fmaxf(a,fminf(b,x));}
++static void evaluate(const struct monterey_lens_mesh*m,int e,int c,float x,float y,float out[2],float jac[4]){
++ int ix=(int)floorf(x),iy=(int)floorf(y);if(ix>31)ix=31;if(iy>31)iy=31;
++ float u=x-ix,v=y-iy;
++ for(int k=0;k<2;k++){
++  float a=m->ray[e][iy][ix][c][k],b=m->ray[e][iy][ix+1][c][k];
++  float d=m->ray[e][iy+1][ix][c][k],f=m->ray[e][iy+1][ix+1][c][k];
++  out[k]=(1-v)*((1-u)*a+u*b)+v*((1-u)*d+u*f);
++  jac[k*2]=(1-v)*(b-a)+v*(f-d);
++  jac[k*2+1]=(1-u)*(d-a)+u*(f-b);
++ }
++}
++int monterey_lens_ray(const struct monterey_lens_mesh*m,int e,int c,float x,float y,float out[2]){
++ if(e<0||e>1||c<0||c>2||!isfinite(x)||!isfinite(y)||x<0||x>32||y<0||y>32)return 0;
++ float j[4];evaluate(m,e,c,x,y,out,j);return 1;
++}
++int monterey_lens_inverse(const struct monterey_lens_mesh*m,int e,int c,float tx,float ty,float *gx,float *gy){
++ if(e<0||e>1||c<0||c>2||!isfinite(tx)||!isfinite(ty))return 0;
++ float x=clamp(16+16*tx,0,32),y=clamp(16+16*ty,0,32);
++ for(int i=0;i<24;i++){
++  float p[2],j[4];evaluate(m,e,c,x,y,p,j);
++  float ex=p[0]-tx,ey=p[1]-ty;
++  if(ex*ex+ey*ey<1e-12f){*gx=x;*gy=y;return 1;}
++  float det=j[0]*j[3]-j[1]*j[2];if(!isfinite(det)||det<1e-7f)return 0;
++  float dx=(j[3]*ex-j[1]*ey)/det,dy=(-j[2]*ex+j[0]*ey)/det;
++  float scale=fmaxf(1,fmaxf(fabsf(dx),fabsf(dy))/4);
++  x=clamp(x-dx/scale,0,32);y=clamp(y-dy/scale,0,32);
++ }
++ return 0;
++}
++int monterey_lens_load(struct monterey_lens_mesh*m,const char*path){
++ unsigned char bytes[52368];FILE*f=fopen(path,"rb");if(!f){perror(path);return 0;}
++ size_t n=fread(bytes,1,sizeof(bytes),f);int extra=fgetc(f);fclose(f);
++ if(n!=sizeof(bytes)||extra!=EOF||le32(bytes)!=0x56347807||le32(bytes+4)!=0||
++    le32(bytes+24)!=32||le32(bytes+28)!=32||le32(bytes+48)!=2880||le32(bytes+52)!=1600){
++  fputs("Unsupported or damaged Quest distortion mesh\n",stderr);return 0;
++ }
++ memset(m,0,sizeof(*m));m->width=2880;m->height=1600;
++ for(int e=0;e<2;e++)for(int k=0;k<4;k++){
++  float angle=lefloat(bytes+64+(e*4+k)*4);
++  if(!isfinite(angle)||angle<10||angle>89)return 0;
++  m->fov_degrees[e][k]=angle;
++ }
++ /* On-disk order: grid row, eye, column, then three (x,y) tangent-ray pairs. */
++ for(int y=0;y<33;y++)for(int e=0;e<2;e++)for(int x=0;x<33;x++)for(int c=0;c<3;c++)for(int k=0;k<2;k++){
++  size_t off=96+(((y*2+e)*33+x)*6+c*2+k)*4;
++  float a=lefloat(bytes+off);if(!isfinite(a)||fabsf(a)>20)return 0;m->ray[e][y][x][c][k]=a;
++ }
++ /* Reject folds/singular cells before attempting inversion. */
++ for(int e=0;e<2;e++)for(int c=0;c<3;c++)for(int y=0;y<32;y++)for(int x=0;x<32;x++)
++  for(int corner=0;corner<4;corner++){
++   float ray[2],j[4];evaluate(m,e,c,x+((corner&1)?1.f:0.f),y+((corner&2)?1.f:0.f),ray,j);
++   if(j[0]*j[3]-j[1]*j[2]<1e-7f)return 0;
++  }
++ for(int e=0;e<2;e++){
++  float x,y;if(!monterey_lens_inverse(m,e,1,0,0,&x,&y))return 0;
++  /* Keep the wearer-confirmed horizontal centers from the sharpness test. */
++  m->center_shift[e]=(e?620.f:820.f)-x*1440.f/32.f;
++  fprintf(stderr,"Eye %d stock ray center %.2f,%.2f; alignment shift %.2f px\n",e,x*45.f,(32-y)*50.f,m->center_shift[e]);
++ }
++ return 1;
++}
+--- /dev/null
++++ b/src/xrt/drivers/monterey/monterey_lens.h
+@@ -0,0 +1,13 @@
++#ifndef QUEST_LENS_MESH_H
++#define QUEST_LENS_MESH_H
++/* Read-only decoder for the stock Quest 1 32x32 per-eye distortion mesh. */
++struct monterey_lens_mesh {
++ float ray[2][33][33][3][2];
++ float center_shift[2];
++ unsigned width,height;
++ float fov_degrees[2][4];
++};
++int monterey_lens_load(struct monterey_lens_mesh *m,const char *path);
++int monterey_lens_ray(const struct monterey_lens_mesh *m,int eye,int channel,float gx,float gy,float ray[2]);
++int monterey_lens_inverse(const struct monterey_lens_mesh *m,int eye,int channel,float tx,float ty,float *gx,float *gy);
++#endif
+--- /dev/null
++++ b/src/xrt/compositor/main/monterey_framebuffer.h
+@@ -0,0 +1,101 @@
++/* Diagnostic-only scanout: no modesets or persistent device changes. */
++#ifndef QUEST_FRAMEBUFFER_H
++#define QUEST_FRAMEBUFFER_H
++#include <linux/fb.h>
++#include <pthread.h>
++#include <sys/ioctl.h>
++#include <sys/mman.h>
++#include <fcntl.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++#include <unistd.h>
++#include <time.h>
++struct framebuffer { int fd; size_t bytes; uint32_t *pixels; void *mapping; size_t map_bytes; unsigned stride; int swap_rb; struct fb_var_screeninfo var;
++ pthread_t worker; pthread_mutex_t lock; pthread_cond_t changed;
++ uint32_t *spare,*ready; int stop,failed,worker_started;
++ double intervals[240]; unsigned interval_count; long long last_submit; };
++static long long framebuffer_time_ns(void) {
++ struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);
++ return (long long)ts.tv_sec*1000000000LL+ts.tv_nsec;
++}
++static int framebuffer_compare_interval(const void *a,const void *b) {
++ double x=*(const double *)a,y=*(const double *)b;return (x>y)-(x<y);
++}
++static void framebuffer_record_submission(struct framebuffer *f) {
++ long long now=framebuffer_time_ns();
++ if(f->last_submit)f->intervals[f->interval_count++]=(now-f->last_submit)/1e6;
++ f->last_submit=now;
++ if(f->interval_count==240){
++  double sum=0;unsigned stalls=0;
++  for(unsigned i=0;i<240;i++){sum+=f->intervals[i];if(f->intervals[i]>25)stalls++;}
++  qsort(f->intervals,240,sizeof(double),framebuffer_compare_interval);
++  fprintf(stderr,"Framebuffer submission: %.1f fps; interval p50 %.2f p95 %.2f p99 %.2f max %.2f ms; >25ms %u/240\n",
++   240000/sum,f->intervals[119],f->intervals[227],f->intervals[237],f->intervals[239],stalls);
++  f->interval_count=0;
++ }
++}
++static void *framebuffer_submit_worker(void *arg) {
++ struct framebuffer *f=arg;
++ pthread_mutex_lock(&f->lock);
++ for(;;){
++  while(!f->ready&&!f->stop)pthread_cond_wait(&f->changed,&f->lock);
++  if(!f->ready&&f->stop)break;
++  uint32_t *ready=f->ready;
++  pthread_mutex_unlock(&f->lock);
++  memcpy(f->mapping,ready,f->bytes);
++  int error=ioctl(f->fd,FBIOPAN_DISPLAY,&f->var);
++  if(error)perror("submit framebuffer");
++  else framebuffer_record_submission(f);
++  pthread_mutex_lock(&f->lock);
++  if(error)f->failed=1;
++  f->spare=ready;f->ready=NULL;
++  pthread_cond_broadcast(&f->changed);
++ }
++ pthread_mutex_unlock(&f->lock);return NULL;
++}
++static void framebuffer_close(struct framebuffer *f) {
++ if(!f->pixels)return;
++ if(f->worker_started){
++  pthread_mutex_lock(&f->lock);f->stop=1;pthread_cond_broadcast(&f->changed);pthread_mutex_unlock(&f->lock);
++  pthread_join(f->worker,NULL);pthread_cond_destroy(&f->changed);pthread_mutex_destroy(&f->lock);
++ }
++ munmap(f->mapping,f->map_bytes);close(f->fd);free(f->pixels);free(f->spare);f->pixels=NULL;
++}
++static int framebuffer_open(struct framebuffer *f,const char *path) {
++ struct fb_fix_screeninfo fix;struct fb_var_screeninfo var;
++ f->fd=open(path,O_RDWR);if(f->fd<0){perror(path);return 0;}
++ if(ioctl(f->fd,FBIOGET_FSCREENINFO,&fix)||ioctl(f->fd,FBIOGET_VSCREENINFO,&var)){perror("framebuffer info");close(f->fd);return 0;}
++ /* Refuse an unexpected layout rather than guessing or changing display mode. */
++ if(var.xres!=2880||var.yres!=1600||var.bits_per_pixel!=32||var.xoffset||var.yoffset||
++    var.green.offset!=8||!((var.red.offset==16&&var.blue.offset==0)||(var.red.offset==0&&var.blue.offset==16))||
++    var.red.length!=8||var.green.length!=8||var.blue.length!=8||
++    fix.line_length!=2880*4||fix.smem_len<fix.line_length*1600){
++  fprintf(stderr,"Unsupported fb: %ux%u %ubpp offsets %u,%u RGB %u/%u/%u stride %u\n",var.xres,var.yres,var.bits_per_pixel,var.xoffset,var.yoffset,var.red.offset,var.green.offset,var.blue.offset,fix.line_length);close(f->fd);return 0;
++ }
++ f->swap_rb=var.red.offset==0;
++ f->stride=fix.line_length/4;f->bytes=(size_t)fix.line_length*1600;f->map_bytes=f->bytes;
++ f->mapping=mmap(NULL,f->map_bytes,PROT_READ|PROT_WRITE,MAP_SHARED,f->fd,0);
++ if(f->mapping==MAP_FAILED){perror("mmap framebuffer");close(f->fd);return 0;}
++ f->pixels=calloc(1,f->bytes);if(!f->pixels){munmap(f->mapping,f->map_bytes);close(f->fd);return 0;}
++ f->var=var;f->var.activate=FB_ACTIVATE_VBL;
++ if(ioctl(f->fd,FBIOBLANK,FB_BLANK_UNBLANK)){perror("unblank framebuffer");framebuffer_close(f);return 0;}
++ f->spare=calloc(1,f->bytes);if(!f->spare){framebuffer_close(f);return 0;}
++ pthread_mutex_init(&f->lock,NULL);pthread_cond_init(&f->changed,NULL);
++ if(pthread_create(&f->worker,NULL,framebuffer_submit_worker,f)){
++  pthread_cond_destroy(&f->changed);pthread_mutex_destroy(&f->lock);framebuffer_close(f);return 0;
++ }
++ f->worker_started=1;
++ puts("Direct framebuffer: 2880x1600, software 180-degree rotation, no modeset");return 1;
++}
++static int framebuffer_present(struct framebuffer *f) {
++ /* Two CPU buffers: render next while MDSS submits previous. Never overwrite
++  * a buffer owned by the submission worker, and never queue stale frames. */
++ pthread_mutex_lock(&f->lock);
++ while(f->ready&&!f->failed)pthread_cond_wait(&f->changed,&f->lock);
++ if(f->failed){pthread_mutex_unlock(&f->lock);return 0;}
++ f->ready=f->pixels;f->pixels=f->spare;f->spare=NULL;
++ pthread_cond_broadcast(&f->changed);pthread_mutex_unlock(&f->lock);return 1;
++}
++#endif
+--- /dev/null
++++ b/src/xrt/compositor/main/comp_window_monterey_fb.c
+@@ -0,0 +1,475 @@
++// Copyright 2019-2023, Collabora, Ltd.
++// Copyright 2024-2025, NVIDIA CORPORATION.
++// SPDX-License-Identifier: BSL-1.0
++/*!
++ * @file
++ * @brief  Simple debug image based target.
++ * @author Jakob Bornecrantz <tbornecrantz@nvidia.com>
++ * @ingroup comp_main
++ */
++
++#include "util/u_misc.h"
++#include "util/u_pacing.h"
++#include "util/u_pretty_print.h"
++
++#include "main/comp_window.h"
++#include "monterey_framebuffer.h"
++
++
++/*
++ *
++ * Structs and defines.
++ *
++ */
++
++struct monterey_fb_target
++{
++	//! Base "class", so that we are a target the compositor can use.
++	struct comp_target base;
++
++	//! For error checking.
++	int64_t index;
++
++	//! Used to create the Vulkan resources, also manages index.
++	struct comp_scratch_single_images target;
++
++	/*!
++	 * Storage for 'exported' images, these are pointed at by
++	 * comt_target::images pointer in the @p base struct.
++	 */
++	struct comp_target_image images[COMP_SCRATCH_NUM_IMAGES];
++
++	//! Compositor frame pacing helper.
++	struct u_pacing_compositor *upc;
++
++	// So we know we can free Vulkan resources safely.
++	bool has_init_vulkan;
++ struct framebuffer fb;
++ struct vk_buffer readback;
++ VkCommandPool copy_pool;
++ VkCommandBuffer copy_cmd;
++ VkFence copy_fence;
++};
++
++
++/*
++ *
++ * Target members.
++ *
++ */
++
++static bool
++target_init_pre_vulkan(struct comp_target *ct)
++{
++	struct monterey_fb_target *dit=(struct monterey_fb_target *)ct;
++ return framebuffer_open(&dit->fb,"/dev/fb0");
++}
++
++static bool
++target_init_post_vulkan(struct comp_target *ct, uint32_t preferred_width, uint32_t preferred_height)
++{
++	struct monterey_fb_target *dit = (struct monterey_fb_target *)ct;
++
++	// We now know Vulkan is running and we can use it.
++	dit->has_init_vulkan = true;
++
++ struct vk_bundle *vk=&ct->c->base.vk;
++ if(!vk_buffer_init(vk,2880*1600*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT,
++   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
++   &dit->readback.handle,&dit->readback.memory))return false;
++ if(vk->vkMapMemory(vk->device,dit->readback.memory,0,VK_WHOLE_SIZE,0,&dit->readback.data)!=VK_SUCCESS)return false;
++ VkCommandPoolCreateInfo pool={.sType=VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
++  .flags=VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,.queueFamilyIndex=vk->main_queue->family_index};
++ if(vk->vkCreateCommandPool(vk->device,&pool,NULL,&dit->copy_pool)!=VK_SUCCESS)return false;
++ VkCommandBufferAllocateInfo alloc={.sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
++  .commandPool=dit->copy_pool,.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY,.commandBufferCount=1};
++ if(vk->vkAllocateCommandBuffers(vk->device,&alloc,&dit->copy_cmd)!=VK_SUCCESS)return false;
++ VkFenceCreateInfo fence={.sType=VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
++ return vk->vkCreateFence(vk->device,&fence,NULL,&dit->copy_fence)==VK_SUCCESS;
++}
++
++static bool
++target_check_ready(struct comp_target *ct)
++{
++	return true; // Always ready.
++}
++
++static void
++target_create_images(struct comp_target *ct, const struct comp_target_create_images_info *create_info)
++{
++	struct monterey_fb_target *dit = (struct monterey_fb_target *)ct;
++	struct vk_bundle *vk = &dit->base.c->base.vk;
++	bool use_unorm = false, use_srgb = false, maybe_convert = false;
++
++	// Paranoia.
++	assert(dit->has_init_vulkan);
++
++	/*
++	 * Find the format we should use, since we are using the scratch images
++	 * to allocate the images we only support the two formats it uses
++	 * (listed below). We search for those breaking as soon as we find those
++	 * and setting if the compositor wanted SRGB or UNORM. But we also look
++	 * for two other commonly used formats, but continue searching for the
++	 * other true formats.
++	 *
++	 * The format used by the scratch image is:
++	 * - VK_FORMAT_R8G8B8A8_SRGB
++	 * - VK_FORMAT_R8G8B8A8_UNORM
++	 *
++	 * The other formats used to determine SRGB vs UNORM:
++	 * - VK_FORMAT_B8G8R8A8_SRGB
++	 * - VK_FORMAT_B8G8R8A8_UNORM
++	 */
++	for (uint32_t i = 0; i < create_info->format_count; i++) {
++		VkFormat format = create_info->formats[i];
++
++		// Used to figure out if we want SRGB or UNORM only.
++		if (!maybe_convert && format == VK_FORMAT_B8G8R8A8_UNORM) {
++			use_unorm = true;
++			maybe_convert = true;
++			continue; // Keep going, we might get better formats.
++		}
++		if (!maybe_convert && format == VK_FORMAT_B8G8R8A8_SRGB) {
++			use_srgb = true;
++			maybe_convert = true;
++			continue; // Keep going, we might get better formats.
++		}
++
++		// These two are what the scratch image allocates.
++		if (format == VK_FORMAT_R8G8B8A8_UNORM) {
++			use_unorm = true;
++			maybe_convert = false;
++			break; // Best match, stop searching.
++		}
++		if (format == VK_FORMAT_R8G8B8A8_SRGB) {
++			use_srgb = true;
++			maybe_convert = false;
++			break; // Best match, stop searching.
++		}
++	}
++
++	// Check
++	assert(use_unorm || use_srgb);
++	if (maybe_convert) {
++		COMP_WARN(ct->c, "Ignoring the format and picking something we use.");
++	}
++
++	// Do the allocation.
++	comp_scratch_single_images_ensure_mutable(&dit->target, vk, ((VkExtent2D){2880,1600}));
++
++	// Share the Vulkan handles of images and image views.
++	for (uint32_t i = 0; i < COMP_SCRATCH_NUM_IMAGES; i++) {
++		dit->images[i].handle = dit->target.images[i].image;
++		if (use_unorm) {
++			dit->images[i].view = dit->target.images[i].unorm_view;
++		}
++		if (use_srgb) {
++			dit->images[i].view = dit->target.images[i].srgb_view;
++		}
++	}
++
++	// Fill in exported data.
++	dit->base.image_count = COMP_SCRATCH_NUM_IMAGES;
++	dit->base.images = &dit->images[0];
++	dit->base.width = ((VkExtent2D){2880,1600}).width;
++	dit->base.height = ((VkExtent2D){2880,1600}).height;
++	if (use_unorm) {
++		dit->base.format = VK_FORMAT_R8G8B8A8_UNORM;
++	}
++	if (use_srgb) {
++		dit->base.format = VK_FORMAT_R8G8B8A8_SRGB;
++	}
++	dit->base.final_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
++}
++
++static bool
++target_has_images(struct comp_target *ct)
++{
++	struct monterey_fb_target *dit = (struct monterey_fb_target *)ct;
++
++	// Simple check.
++	return dit->base.images != NULL;
++}
++
++static VkResult
++target_acquire(struct comp_target *ct, uint32_t *out_index)
++{
++	struct monterey_fb_target *dit = (struct monterey_fb_target *)ct;
++
++	// Error checking.
++	assert(dit->index == -1);
++
++	uint32_t index = 0;
++	comp_scratch_single_images_get(&dit->target, &index);
++
++	// For error checking.
++	dit->index = index;
++
++	// Return the variable.
++	*out_index = index;
++
++	return VK_SUCCESS;
++}
++
++static VkResult
++target_present(struct comp_target *ct,
++               VkQueue queue,
++               uint32_t index,
++               uint64_t timeline_semaphore_value,
++               int64_t desired_present_time_ns,
++               int64_t present_slop_ns)
++{
++	struct monterey_fb_target *dit = (struct monterey_fb_target *)ct;
++
++	assert(index == dit->index);
++
++ struct vk_bundle *vk=&ct->c->base.vk;
++ VkResult ret=vk->vkResetCommandPool(vk->device,dit->copy_pool,0);if(ret!=VK_SUCCESS)return ret;
++ VkCommandBufferBeginInfo begin={.sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
++ ret=vk->vkBeginCommandBuffer(dit->copy_cmd,&begin);if(ret!=VK_SUCCESS)return ret;
++ VkImageMemoryBarrier barrier={.sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
++  .srcAccessMask=VK_ACCESS_MEMORY_WRITE_BIT,.dstAccessMask=VK_ACCESS_TRANSFER_READ_BIT,
++  .oldLayout=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,.newLayout=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
++  .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
++  .image=ct->images[index].handle,.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}};
++ vk->vkCmdPipelineBarrier(dit->copy_cmd,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,NULL,0,NULL,1,&barrier);
++ VkBufferImageCopy region={.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1},.imageExtent={2880,1600,1}};
++ vk->vkCmdCopyImageToBuffer(dit->copy_cmd,ct->images[index].handle,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,dit->readback.handle,1,&region);
++ VkBufferMemoryBarrier host={.sType=VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
++  .srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT,.dstAccessMask=VK_ACCESS_HOST_READ_BIT,
++  .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
++  .buffer=dit->readback.handle,.offset=0,.size=VK_WHOLE_SIZE};
++ vk->vkCmdPipelineBarrier(dit->copy_cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,0,NULL,1,&host,0,NULL);
++ ret=vk->vkEndCommandBuffer(dit->copy_cmd);if(ret!=VK_SUCCESS)return ret;
++ ret=vk->vkResetFences(vk->device,1,&dit->copy_fence);if(ret!=VK_SUCCESS)return ret;
++ VkSubmitInfo submit={.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO,.commandBufferCount=1,.pCommandBuffers=&dit->copy_cmd};
++ vk_queue_lock(vk->main_queue);
++ ret=vk->vkQueueSubmit(queue,1,&submit,dit->copy_fence);
++ vk_queue_unlock(vk->main_queue);if(ret!=VK_SUCCESS)return ret;
++ ret=vk->vkWaitForFences(vk->device,1,&dit->copy_fence,VK_TRUE,1000000000ULL);if(ret!=VK_SUCCESS)return ret;
++ const uint32_t *src=dit->readback.data;
++ /* Vulkan R8G8B8A8 is native RGBA bytes; CPU applies the required panel rotation. */
++ for(size_t i=0,n=2880*1600;i<n;i++){
++  uint32_t p=src[i];
++  if(!dit->fb.swap_rb)p=(p&0xff00ff00)|((p&0xff)<<16)|((p>>16)&0xff);
++  dit->fb.pixels[n-1-i]=p;
++ }
++ if(!framebuffer_present(&dit->fb))return VK_ERROR_SURFACE_LOST_KHR;
++	comp_scratch_single_images_done(&dit->target);
++
++	// For error checking.
++	dit->index = -1;
++
++	return VK_SUCCESS;
++}
++
++static VkResult
++target_wait_for_present(struct comp_target *ct, time_duration_ns timeout_ns)
++{
++	return VK_ERROR_EXTENSION_NOT_PRESENT;
++}
++
++static void
++target_flush(struct comp_target *ct)
++{
++	// No-op
++}
++
++static void
++target_calc_frame_pacing(struct comp_target *ct,
++                         int64_t *out_frame_id,
++                         int64_t *out_wake_up_time_ns,
++                         int64_t *out_desired_present_time_ns,
++                         int64_t *out_present_slop_ns,
++                         int64_t *out_predicted_display_time_ns)
++{
++	struct monterey_fb_target *dit = (struct monterey_fb_target *)ct;
++
++	int64_t frame_id = -1;
++	int64_t wake_up_time_ns = 0;
++	int64_t desired_present_time_ns = 0;
++	int64_t present_slop_ns = 0;
++	int64_t predicted_display_time_ns = 0;
++	int64_t predicted_display_period_ns = 0;
++	int64_t min_display_period_ns = 0;
++	int64_t now_ns = os_monotonic_get_ns();
++
++	u_pc_predict(dit->upc,                     //
++	             now_ns,                       //
++	             &frame_id,                    //
++	             &wake_up_time_ns,             //
++	             &desired_present_time_ns,     //
++	             &present_slop_ns,             //
++	             &predicted_display_time_ns,   //
++	             &predicted_display_period_ns, //
++	             &min_display_period_ns);      //
++
++	*out_frame_id = frame_id;
++	*out_wake_up_time_ns = wake_up_time_ns;
++	*out_desired_present_time_ns = desired_present_time_ns;
++	*out_predicted_display_time_ns = predicted_display_time_ns;
++	*out_present_slop_ns = present_slop_ns;
++}
++
++static void
++target_mark_timing_point(struct comp_target *ct, enum comp_target_timing_point point, int64_t frame_id, int64_t when_ns)
++{
++	struct monterey_fb_target *dit = (struct monterey_fb_target *)ct;
++
++	switch (point) {
++	case COMP_TARGET_TIMING_POINT_WAKE_UP:
++		u_pc_mark_point(dit->upc, U_TIMING_POINT_WAKE_UP, frame_id, when_ns);
++		break;
++	case COMP_TARGET_TIMING_POINT_BEGIN: //
++		u_pc_mark_point(dit->upc, U_TIMING_POINT_BEGIN, frame_id, when_ns);
++		break;
++	case COMP_TARGET_TIMING_POINT_SUBMIT_BEGIN:
++		u_pc_mark_point(dit->upc, U_TIMING_POINT_SUBMIT_BEGIN, frame_id, when_ns);
++		break;
++	case COMP_TARGET_TIMING_POINT_SUBMIT_END:
++		u_pc_mark_point(dit->upc, U_TIMING_POINT_SUBMIT_END, frame_id, when_ns);
++		break;
++	default: assert(false);
++	}
++}
++
++static VkResult
++target_update_timings(struct comp_target *ct)
++{
++	return VK_SUCCESS; // No-op
++}
++
++static void
++target_info_gpu(struct comp_target *ct, int64_t frame_id, int64_t gpu_start_ns, int64_t gpu_end_ns, int64_t when_ns)
++{
++	struct monterey_fb_target *dit = (struct monterey_fb_target *)ct;
++
++	u_pc_info_gpu(dit->upc, frame_id, gpu_start_ns, gpu_end_ns, when_ns);
++}
++
++static void
++target_set_title(struct comp_target *ct, const char *title)
++{
++	// No-op
++}
++
++static void
++target_destroy(struct comp_target *ct)
++{
++	struct monterey_fb_target *dit = (struct monterey_fb_target *)ct;
++	struct vk_bundle *vk = &dit->base.c->base.vk;
++
++	// Do this first.
++	u_var_remove_root(dit);
++
++	// Can only allocate if we have Vulkan.
++	if (dit->has_init_vulkan) {
++  vk_queue_lock(vk->main_queue);vk->vkQueueWaitIdle(vk->main_queue->queue);vk_queue_unlock(vk->main_queue);
++  if(dit->copy_fence)vk->vkDestroyFence(vk->device,dit->copy_fence,NULL);
++  if(dit->copy_pool)vk->vkDestroyCommandPool(vk->device,dit->copy_pool,NULL);
++  if(dit->readback.data)vk->vkUnmapMemory(vk->device,dit->readback.memory);
++  vk_buffer_destroy(&dit->readback,vk);
++		comp_scratch_single_images_free(&dit->target, vk);
++		dit->has_init_vulkan = false;
++		dit->base.image_count = 0;
++		dit->base.images = NULL;
++		dit->base.width = 0;
++		dit->base.height = 0;
++		dit->base.format = VK_FORMAT_UNDEFINED;
++		dit->base.final_layout = VK_IMAGE_LAYOUT_UNDEFINED;
++	}
++
++	// Always free non-Vulkan resources.
++	comp_scratch_single_images_destroy(&dit->target);
++
++	// Pacing is always created.
++	u_pc_destroy(&dit->upc);
++
++	framebuffer_close(&dit->fb);
++	// Free memory.
++	free(dit);
++}
++
++static struct comp_target *
++target_create(struct comp_compositor *c)
++{
++	struct monterey_fb_target *dit = U_TYPED_CALLOC(struct monterey_fb_target);
++
++	dit->base.name = "monterey_fb";
++	dit->base.init_pre_vulkan = target_init_pre_vulkan;
++	dit->base.init_post_vulkan = target_init_post_vulkan;
++	dit->base.check_ready = target_check_ready;
++	dit->base.create_images = target_create_images;
++	dit->base.has_images = target_has_images;
++	dit->base.acquire = target_acquire;
++	dit->base.present = target_present;
++	dit->base.wait_for_present = target_wait_for_present;
++	dit->base.flush = target_flush;
++	dit->base.calc_frame_pacing = target_calc_frame_pacing;
++	dit->base.mark_timing_point = target_mark_timing_point;
++	dit->base.update_timings = target_update_timings;
++	dit->base.info_gpu = target_info_gpu;
++	dit->base.set_title = target_set_title;
++	dit->base.destroy = target_destroy;
++	dit->base.c = c;
++
++	dit->base.wait_for_present_supported = false;
++
++	// Create the pacer.
++	uint64_t now_ns = os_monotonic_get_ns();
++	u_pc_fake_create(c->settings.nominal_frame_interval_ns, now_ns, &dit->upc);
++
++	// Only inits locking, Vulkan resources inited later.
++	comp_scratch_single_images_init(&dit->target);
++
++	// For error checking.
++	dit->index = -1;
++
++	// Variable tracking.
++	u_var_add_root(dit, "Compositor output", true);
++	u_var_add_native_images_debug(dit, &dit->target.unid, "Image");
++
++	return &dit->base;
++}
++
++
++/*
++ *
++ * Factory
++ *
++ */
++
++static bool
++factory_detect(const struct comp_target_factory *ctf, struct comp_compositor *c)
++{
++	return false;
++}
++
++static bool
++factory_create_target(const struct comp_target_factory *ctf, struct comp_compositor *c, struct comp_target **out_ct)
++{
++	struct comp_target *ct = target_create(c);
++	if (ct == NULL) {
++		return false;
++	}
++
++	COMP_INFO(c,"Monterey framebuffer compositor target: no desktop, stock runtime optics");
++
++	*out_ct = ct;
++
++	return true;
++}
++
++const struct comp_target_factory comp_target_factory_monterey_fb = {
++    .name = "Monterey framebuffer",
++    .identifier = "monterey_fb",
++    .requires_vulkan_for_create = false,
++    .is_deferred = false,
++    .required_instance_version = 0,
++    .required_instance_extensions = NULL,
++    .required_instance_extension_count = 0,
++    .optional_device_extensions = NULL,
++    .optional_device_extension_count = 0,
++    .detect = factory_detect,
++    .create_target = factory_create_target,
++};

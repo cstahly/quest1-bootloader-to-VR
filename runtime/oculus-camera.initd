@@ -1,0 +1,18 @@
+#!/sbin/openrc-run
+description="Four monochrome Quest camera feeds for the VR playground"
+command=/usr/libexec/oculus-camera/run-stock-camera.sh
+command_args=live
+command_background=true
+pidfile=/run/oculus-camera.pid
+output_log=/var/log/oculus-camera.log
+error_log=/var/log/oculus-camera.log
+retry="TERM/8/KILL/2"
+depend() {
+    need localmount oculus-recovery-guard oculus-wifi
+    after oculus-controller
+    before oculus-test-scene
+}
+start_pre() {
+    /usr/sbin/oculus-recovery-guard --check || return 1
+    [ "$(cat /sys/devices/virtual/misc/syncboss0/spi/control/num_cameras 2>/dev/null)" = 4 ] || return 1
+}

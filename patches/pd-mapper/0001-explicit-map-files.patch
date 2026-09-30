@@ -1,0 +1,30 @@
+--- a/pd-mapper.c
++++ b/pd-mapper.c
+@@ -404,9 +404,24 @@
+ 	int ret;
+ 	int fd;
+ 
+-	ret = pd_load_maps();
+-	if (ret)
+-		exit(1);
++	if (argc > 1) {
++		if (argc < 3 || strcmp(argv[1], "--maps")) {
++			fprintf(stderr, "usage: %s [--maps FILE.jsn ...]\n", argv[0]);
++			return 2;
++		}
++		for (int i = 2; i < argc; i++) {
++			ret = pd_load_map(argv[i]);
++			if (ret) {
++				fprintf(stderr, "failed to load map %s\n", argv[i]);
++				return 1;
++			}
++			fprintf(stderr, "loaded map %s\n", argv[i]);
++		}
++	} else {
++		ret = pd_load_maps();
++		if (ret)
++			return 1;
++	}
+ 
+ 	if (!pd_maps) {
+ 		fprintf(stderr, "no pd maps available\n");

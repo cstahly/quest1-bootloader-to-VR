@@ -1,0 +1,11 @@
+#!/sbin/openrc-run
+description="Initialize Qualcomm IPC using the stock access policy"
+depend() {
+    need oculus-stock-runtime
+    before oculus-rmtfs
+}
+start() {
+    ebegin "Initializing Qualcomm IPC security policy"
+    /usr/sbin/oculus-ipc-security
+    eend $?
+}

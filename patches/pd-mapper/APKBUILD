@@ -1,0 +1,21 @@
+pkgname=pd-mapper-monterey
+pkgver=0_git20260930
+pkgrel=0
+pkgdesc="Qualcomm protection-domain mapper with explicit maps for Monterey"
+url="https://github.com/linux-msm/pd-mapper"
+arch="aarch64"
+license="BSD-3-Clause"
+_commit=5ecd2fe926aca7abfe40724177f63b942cff3947
+makedepends="qrtr-dev xz-dev"
+options="!check"
+source="pd-mapper-$_commit.tar.gz::https://github.com/linux-msm/pd-mapper/archive/$_commit.tar.gz
+    0001-explicit-map-files.patch"
+builddir="$srcdir/pd-mapper-$_commit"
+build() { make; }
+package() {
+    install -Dm755 pd-mapper "$pkgdir/usr/bin/pd-mapper-monterey"
+}
+sha512sums="
+d8dda67fac505141fc021e66c563672e76dc8202358a2b493db8c4a6034dac27db1a0dcda04406ef001bb62cfcafe7c8f8343a3846c935525407d53551c9f6c4  pd-mapper-5ecd2fe926aca7abfe40724177f63b942cff3947.tar.gz
+b1783b1ffd162d85d476beb72f30b815867429098437462f8c4ffa05ce4759ed0c1672b51897d8870d32e5316e2029a934e8be5c122a07aca031c2fde8d445c3  0001-explicit-map-files.patch
+"

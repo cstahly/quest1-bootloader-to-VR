@@ -76,14 +76,23 @@ void quest_lens_prepare_fast(const struct quest_lens_mesh*m){
   inverse_lut[e][c][y][x][0]=gx;inverse_lut[e][c][y][x][1]=gy;
  }
 }
-int quest_lens_project_fast(const struct quest_lens_mesh*m,int e,int c,float tx,float ty,float *gx,float *gy){
+static int project_cached(const struct quest_lens_mesh*m,int e,int c,float tx,float ty,float *gx,float *gy,int fallback){
  if(e<0||e>1||c<0||c>2||!isfinite(tx)||!isfinite(ty)||fabsf(tx)>=4||fabsf(ty)>=4)return 0;
  float x=(tx+4)/LUT_STEP,y=(ty+4)/LUT_STEP;int ix=(int)x,iy=(int)y;
  if(ix>=LUT_SIDE-1){ix=LUT_SIDE-2;}
  if(iy>=LUT_SIDE-1){iy=LUT_SIDE-2;}
  float u=x-ix,v=y-iy;const float *a=inverse_lut[e][c][iy][ix],*b=inverse_lut[e][c][iy][ix+1];
  const float *d=inverse_lut[e][c][iy+1][ix],*f=inverse_lut[e][c][iy+1][ix+1];
- if(!isfinite(a[0])||!isfinite(b[0])||!isfinite(d[0])||!isfinite(f[0]))return quest_lens_inverse(m,e,c,tx,ty,gx,gy);
+ if(!isfinite(a[0])||!isfinite(b[0])||!isfinite(d[0])||!isfinite(f[0]))return fallback?quest_lens_inverse(m,e,c,tx,ty,gx,gy):0;
  *gx=(1-v)*((1-u)*a[0]+u*b[0])+v*((1-u)*d[0]+u*f[0]);
  *gy=(1-v)*((1-u)*a[1]+u*b[1])+v*((1-u)*d[1]+u*f[1]);return 1;
+}
+
+int quest_lens_project_fast(const struct quest_lens_mesh*m,int e,int c,float tx,float ty,float *gx,float *gy){
+ return project_cached(m,e,c,tx,ty,gx,gy,1);
+}
+/* Textured panels can clip the tiny edge cells rather than spending an iterative
+ * inverse solve on every off-screen vertex, every frame. Wires retain fallback. */
+int quest_lens_project_clipped(const struct quest_lens_mesh*m,int e,int c,float tx,float ty,float *gx,float *gy){
+ return project_cached(m,e,c,tx,ty,gx,gy,0);
 }

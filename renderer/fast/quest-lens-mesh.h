@@ -11,4 +11,5 @@ int quest_lens_ray(const struct quest_lens_mesh *m,int eye,int channel,float gx,
 int quest_lens_inverse(const struct quest_lens_mesh *m,int eye,int channel,float tx,float ty,float *gx,float *gy);
 void quest_lens_prepare_fast(const struct quest_lens_mesh *m);
 int quest_lens_project_fast(const struct quest_lens_mesh *m,int eye,int channel,float tx,float ty,float *gx,float *gy);
+int quest_lens_project_clipped(const struct quest_lens_mesh *m,int eye,int channel,float tx,float ty,float *gx,float *gy);
 #endif

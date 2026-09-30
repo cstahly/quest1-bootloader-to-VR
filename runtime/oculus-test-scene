@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+/usr/sbin/oculus-recovery-guard --check
+export MONTEREY_DISTORTION_MESH=/var/lib/monado/monterey/distortion-mesh.bin
+export MONTEREY_RECOVERY_SESSION=1
+exec /usr/libexec/oculus-test-scene/run-head-mesh-fb.sh

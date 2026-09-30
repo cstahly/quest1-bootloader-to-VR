@@ -1,0 +1,289 @@
+--- a/tqftpserv.c
++++ b/tqftpserv.c
+@@ -65,6 +65,7 @@
+ 	int fd;
+ 
+ 	size_t block;
++	size_t last_data_size;
+ 
+ 	size_t blksize;
+ 	size_t rsize;
+@@ -114,7 +115,7 @@
+ 	va_start(ap, fmt);
+ 	vfprintf(stdout, fmt, ap);
+ 	va_end(ap);
+-	fflush(stderr);
++	fflush(stdout);
+ }
+ 
+ static int sanitize_path(const char *path)
+@@ -132,7 +133,7 @@
+ 	return 0;
+ }
+ 
+-static int tftp_send_error(int sock, enum tftp_error code, const char *msg)
++static int tftp_send_error(int sock, const struct sockaddr_qrtr *peer, enum tftp_error code, const char *msg)
+ {
+ 	size_t len;
+ 	char *buf;
+@@ -148,7 +149,7 @@
+ 	*(uint16_t *)(buf + 2) = htons(code);
+ 	memcpy(buf + 4, msg, len - 4);
+ 
+-	rc = send(sock, buf, len, 0);
++	rc = sendto(sock, buf, len, 0, (const struct sockaddr *)peer, sizeof(*peer));
+ 	free(buf);
+ 	return rc;
+ }
+@@ -166,15 +167,12 @@
+ static void tftp_send_error_to(struct sockaddr_qrtr *sq, enum tftp_error code, const char *msg)
+ {
+ 	int sock;
+-	int ret;
+ 
+ 	sock = qrtr_open(0);
+ 	if (sock < 0)
+ 		return;
+ 
+-	ret = connect(sock, (struct sockaddr *)sq, sizeof(*sq));
+-	if (ret >= 0)
+-		tftp_send_error(sock, code, msg);
++	tftp_send_error(sock, sq, code, msg);
+ 
+ 	close(sock);
+ }
+@@ -196,7 +194,7 @@
+ 	len = pread(client->fd, p, client->blksize, offset);
+ 	if (len < 0) {
+ 		log_err("failed to read data: %s\n", strerror(errno));
+-		tftp_send_error(client->sock, TFTP_ERROR_UNDEF, "Read error");
++		tftp_send_error(client->sock, &client->sq, TFTP_ERROR_UNDEF, "Read error");
+ 		return len;
+ 	}
+ 
+@@ -216,21 +214,22 @@
+ 	}
+ 
+ 	log_debug("Sending %zd bytes of DATA to %d:%d\n", send_len, client->sq.sq_node, client->sq.sq_port);
+-	return send(client->sock, buf, send_len, 0);
+-}
+-
+-
+-static int tftp_send_ack(int sock, int block)
++	client->last_data_size = send_len - 4;
++	return sendto(client->sock, buf, send_len, 0, (const struct sockaddr *)&client->sq, sizeof(client->sq));
++}
++
++
++static int tftp_send_ack(int sock, const struct sockaddr_qrtr *peer, int block)
+ {
+ 	struct {
+ 		uint16_t opcode;
+ 		uint16_t block;
+ 	} ack = { htons(OP_ACK), htons(block) };
+ 
+-	return send(sock, &ack, sizeof(ack), 0);
+-}
+-
+-static int tftp_send_oack(int sock, size_t *blocksize, size_t *tsize,
++	return sendto(sock, &ack, sizeof(ack), 0, (const struct sockaddr *)peer, sizeof(*peer));
++}
++
++static int tftp_send_oack(int sock, const struct sockaddr_qrtr *peer, size_t *blocksize, size_t *tsize,
+ 			  size_t *wsize, unsigned int *timeoutms, size_t *rsize,
+ 			  off_t *seek)
+ {
+@@ -320,7 +319,7 @@
+ 		*p++ = '\0';
+ 	}
+ 
+-	return send(sock, buf, p - buf, 0);
++	return sendto(sock, buf, p - buf, 0, (const struct sockaddr *)peer, sizeof(*peer));
+ }
+ 
+ static int parse_options(const char *buf, size_t len, size_t *blksize,
+@@ -506,17 +505,10 @@
+ 		return;
+ 	}
+ 
+-	ret = connect(sock, (struct sockaddr *)sq, sizeof(*sq));
+-	if (ret < 0) {
+-		log_err("unable to connect new qrtr socket to remote\n");
+-		goto out_close_sock;
+-		return;
+-	}
+-
+ 	fd = translate_open(filename, O_RDONLY);
+ 	if (fd < 0) {
+ 		log_err("unable to open %s (%d), reject\n", filename, errno);
+-		tftp_send_error(sock, TFTP_ERROR_ENOENT, "file not found");
++		tftp_send_error(sock, sq, TFTP_ERROR_ENOENT, "file not found");
+ 		goto out_close_sock;
+ 		return;
+ 	}
+@@ -526,7 +518,7 @@
+ 		if (tsize < 0) {
+ 			log_err("unable to determine file size for %s: %s\n",
+ 				filename, strerror(errno));
+-			tftp_send_error(sock, TFTP_ERROR_UNDEF, "Cannot determine file size");
++			tftp_send_error(sock, sq, TFTP_ERROR_UNDEF, "Cannot determine file size");
+ 			goto out_close_sock;
+ 			return;
+ 		}
+@@ -548,7 +540,7 @@
+ 	client->blk_buf = calloc(1, blksize + 4);
+ 	if (!client->blk_buf) {
+ 		log_err("Memory allocation failure\n");
+-		tftp_send_error(sock, TFTP_ERROR_UNDEF, "Resources temporary unavailable");
++		tftp_send_error(sock, sq, TFTP_ERROR_UNDEF, "Resources temporary unavailable");
+ 		goto out_free_client;
+ 		return;
+ 	}
+@@ -556,7 +548,7 @@
+ 	client->rw_buf = calloc(1, client->rw_buf_size);
+ 	if (!client->rw_buf) {
+ 		log_err("Memory allocation failure\n");
+-		tftp_send_error(sock, TFTP_ERROR_UNDEF, "Resources temporary unavailable");
++		tftp_send_error(sock, sq, TFTP_ERROR_UNDEF, "Resources temporary unavailable");
+ 		goto out_free_blk_buf;
+ 		return;
+ 	}
+@@ -566,7 +558,7 @@
+ 	list_add(&readers, &client->node);
+ 
+ 	if (do_oack) {
+-		tftp_send_oack(client->sock, &blksize,
++		tftp_send_oack(client->sock, &client->sq, &blksize,
+ 			       tsize ? (size_t*)&tsize : NULL,
+ 			       wsize ? &wsize : NULL,
+ 			       &client->timeoutms,
+@@ -671,13 +663,6 @@
+ 		return;
+ 	}
+ 
+-	ret = connect(sock, (struct sockaddr *)sq, sizeof(*sq));
+-	if (ret < 0) {
+-		log_err("unable to connect new qrtr socket to remote\n");
+-		goto out_close_sock;
+-		return;
+-	}
+-
+ 	client = calloc(1, sizeof(*client));
+ 	client->sq = *sq;
+ 	client->sock = sock;
+@@ -693,7 +678,7 @@
+ 	client->blk_buf = calloc(1, blksize + 4);
+ 	if (!client->blk_buf) {
+ 		log_err("Memory allocation failure\n");
+-		tftp_send_error(sock, TFTP_ERROR_UNDEF, "Resources temporary unavailable");
++		tftp_send_error(sock, sq, TFTP_ERROR_UNDEF, "Resources temporary unavailable");
+ 		goto out_free_client;
+ 		return;
+ 	}
+@@ -701,7 +686,7 @@
+ 	client->rw_buf = calloc(1, client->rw_buf_size);
+ 	if (!client->rw_buf) {
+ 		log_err("Memory allocation failure\n");
+-		tftp_send_error(sock, TFTP_ERROR_UNDEF, "Resources temporary unavailable");
++		tftp_send_error(sock, sq, TFTP_ERROR_UNDEF, "Resources temporary unavailable");
+ 		goto out_free_blk_buf;
+ 		return;
+ 	}
+@@ -711,14 +696,14 @@
+ 	list_add(&writers, &client->node);
+ 
+ 	if (do_oack) {
+-		tftp_send_oack(client->sock, &blksize,
++		tftp_send_oack(client->sock, &client->sq, &blksize,
+ 			       tsize ? (size_t*)&tsize : NULL,
+ 			       wsize ? &wsize : NULL,
+ 			       &client->timeoutms,
+ 			       rsize ? &rsize : NULL,
+ 			       seek ? &seek : NULL);
+ 	} else {
+-		tftp_send_data(client, 1, 0, 0);
++		tftp_send_ack(client->sock, &client->sq, 0);
+ 	}
+ 
+ 	return;
+@@ -729,7 +714,6 @@
+ 	free(client);
+ out_close_fd:
+ 	close(fd);
+-out_close_sock:
+ 	close(sock);
+ }
+ 
+@@ -773,7 +757,7 @@
+ 		return -1;
+ 	} else if (opcode != OP_ACK) {
+ 		log_err("Expected ACK, got %d\n", opcode);
+-		tftp_send_error(client->sock, TFTP_ERROR_EBADOP, "Expected ACK opcode");
++		tftp_send_error(client->sock, &client->sq, TFTP_ERROR_EBADOP, "Expected ACK opcode");
+ 		return -1;
+ 	}
+ 
+@@ -781,14 +765,15 @@
+ 	log_debug("Got ack for %d from %d:%d\n", last, sq.sq_node, sq.sq_port);
+ 
+ 	/* We've sent enough data for rsize already */
+-	if (last * client->blksize > client->rsize)
++	if ((last && client->last_data_size < client->blksize) ||
++	    (client->rsize && last * client->blksize >= client->rsize))
+ 		return 0;
+ 
+ 	for (block = last; block < last + client->wsize; block++) {
+ 		size_t offset = client->seek + block * client->blksize;
+ 		size_t response_size = 0;
+ 		/* Check if need to limit response size based for requested rsize */
+-		if ((block + 1) * client->blksize > client->rsize)
++		if (client->rsize && (block + 1) * client->blksize > client->rsize)
+ 			response_size = client->rsize % client->blksize;
+ 
+ 		n = tftp_send_data(client, block + 1,
+@@ -798,10 +783,10 @@
+ 			break;
+ 		}
+ 		log_debug("Sent block %d of %zd to %d:%d\n", block + 1, n, sq.sq_node, sq.sq_port);
+-		if (n == 0)
++		if (n < client->blksize + 4)
+ 			break;
+ 		/* We've sent enough data for rsize already */
+-		if ((block + 1) * client->blksize > client->rsize)
++		if (client->rsize && (block + 1) * client->blksize > client->rsize)
+ 			break;
+ 	}
+ 
+@@ -837,7 +822,7 @@
+ 	block = buf[2] << 8 | buf[3];
+ 	if (opcode != OP_DATA) {
+ 		log_err("Expected DATA opcode, got %d\n", opcode);
+-		tftp_send_error(client->sock, TFTP_ERROR_EBADOP, "Expected DATA opcode");
++		tftp_send_error(client->sock, &client->sq, TFTP_ERROR_EBADOP, "Expected DATA opcode");
+ 		return -1;
+ 	}
+ 
+@@ -849,7 +834,7 @@
+ 		uint16_t blk_expected = client->blk_expected;
+ 
+ 		log_err("Block number out of sequence: %d (expected %d)\n", block, blk_expected);
+-		tftp_send_error(client->sock, TFTP_ERROR_EBADOP, "Block number out of sequence");
++		tftp_send_error(client->sock, &client->sq, TFTP_ERROR_EBADOP, "Block number out of sequence");
+ 
+ 		/* Set blk_expected to beginning of current window */
+ 		if ((blk_expected % client->wsize) == 0)
+@@ -875,12 +860,12 @@
+ 		ret = write(client->fd, client->rw_buf, client->blk_offset);
+ 		if (ret < 0) {
+ 			log_err("failed to write data: %s\n", strerror(errno));
+-			tftp_send_error(client->sock, TFTP_ERROR_ENOSPACE, "Disk full or write error");
++			tftp_send_error(client->sock, &client->sq, TFTP_ERROR_ENOSPACE, "Disk full or write error");
+ 			return -1;
+ 		}
+ 
+ 		client->blk_offset = 0;
+-		tftp_send_ack(client->sock, block);
++		tftp_send_ack(client->sock, &client->sq, block);
+ 	}
+ 
+ 	return payload == client->blksize ? 1 : 0;

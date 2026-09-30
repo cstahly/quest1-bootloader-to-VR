@@ -1,0 +1,36 @@
+#!/sbin/openrc-run
+description="Controller-renewable recovery countdown (hardware watchdog unchanged)"
+command=/usr/sbin/oculus-recovery-guard
+command_args=--run
+command_background=true
+pidfile=/run/oculus-recovery-guard.pid
+output_log=/var/log/oculus-recovery-guard.log
+error_log=/var/log/oculus-recovery-guard.log
+depend() {
+    need localmount
+    after oculus-wifi oculus-controller
+    before oculus-test-scene
+}
+start_pre() {
+    # Wi-Fi's background launcher must finish its original-guard checks first.
+    if [ -e /etc/runlevels/default/oculus-wifi ]; then
+        for attempt in $(seq 1 100); do
+            [ -s /run/oculus-wifi/status ] && return 0
+            sleep 0.1
+        done
+        eerror "Wi-Fi has not passed recovery preflight; retaining the original timer"
+        return 1
+    fi
+}
+start_post() {
+    for attempt in $(seq 1 30); do
+        /usr/sbin/oculus-recovery-guard --check && return 0
+        sleep 0.1
+    done
+    eerror "Recovery takeover not confirmed; leaving the original timer in place"
+    return 1
+}
+stop() {
+    ewarn "The active guard must remain armed; use recovery reboot to end this boot."
+    return 1
+}

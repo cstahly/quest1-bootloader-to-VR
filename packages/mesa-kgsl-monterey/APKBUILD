@@ -1,0 +1,38 @@
+# Isolated experimental Freedreno OpenGL-over-KGSL build; no system Mesa replacement.
+pkgname=mesa-kgsl-monterey
+pkgver=26.1.0_git20260930
+pkgrel=0
+pkgdesc="Isolated Mesa Freedreno KGSL experiment for Monterey Adreno 540"
+url="https://github.com/lfdevs/mesa-for-android-container"
+arch="aarch64"
+license="MIT"
+# This private experiment intentionally lives outside system Mesa paths.
+# Explicit ELF dependencies keep private EGL/GLES libraries from advertising
+# themselves as replacements for the system Mesa libraries.
+options="!check !fhs !tracedeps"
+depends="so:libc.musl-aarch64.so.1 so:libdrm.so.2 so:libexpat.so.1
+ so:libz.so.1 so:libzstd.so.1 so:libstdc++.so.6 so:libgcc_s.so.1
+ so:libbz2.so.1 so:libb2.so.1 so:liblz4.so.1 so:liblzma.so.5
+ so:libcrypto.so.3 so:libxml2.so.2"
+makedepends="meson samurai bison flex python3 py3-mako py3-packaging py3-yaml
+ expat-dev libdrm-dev zlib-dev zstd-dev elfutils-dev linux-headers"
+_commit=401198fbcf61f74bf7214e1be57f811fc74c8358
+source="mesa-kgsl-$_commit.tar.gz::https://github.com/lfdevs/mesa-for-android-container/archive/$_commit.tar.gz"
+builddir="$srcdir/mesa-for-android-container-$_commit"
+build() {
+ meson setup build --prefix=/opt/mesa-kgsl --libdir=lib \
+  -Dbuildtype=release -Dplatforms= -Dgallium-drivers=freedreno \
+  -Dfreedreno-kmds=kgsl -Dvulkan-drivers= -Dvulkan-layers= \
+  -Dglx=disabled -Dglvnd=disabled -Degl=enabled -Dgles1=disabled -Dgles2=enabled \
+  -Dgbm=disabled -Dllvm=disabled -Dgallium-rusticl=false \
+  -Dgallium-va=disabled -Dgallium-mediafoundation=disabled \
+  -Dlibunwind=disabled -Dintel-rt=disabled -Dmicrosoft-clc=disabled \
+  -Dvalgrind=disabled -Dbuild-tests=false
+ meson compile -C build
+}
+package() {
+ DESTDIR="$pkgdir" meson install -C build
+}
+sha512sums="
+f1a2f209c99d5e12aa2e3f93a21e44ec8d0daa784f8dd95b7c9e5208e77a0c86f2be4299dea5a1180e7945541e9268d5a172b9f949debab6906cf639da9cb208  mesa-kgsl-401198fbcf61f74bf7214e1be57f811fc74c8358.tar.gz
+"

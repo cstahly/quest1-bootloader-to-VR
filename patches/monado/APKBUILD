@@ -1,7 +1,7 @@
 # Monado v25.1.0 with the guarded Oculus Quest 1 (Monterey) driver.
 pkgname=monado-oculus-monterey
 pkgver=25.1.0_git20260822
-pkgrel=1
+pkgrel=3
 pkgdesc="Monado OpenXR runtime with guarded Oculus Monterey HMD support"
 url="https://github.com/Block-Flock/monado-oculus-monterey"
 arch="aarch64"
@@ -35,6 +35,7 @@ makedepends="
 _commit=e160863ad52c0e1c29c8bb7df3e47facdb02288d
 source="$pkgname-$_commit.tar.gz::https://github.com/Block-Flock/monado-oculus-monterey/archive/$_commit.tar.gz
 	0001-monterey-head-frame-startup.patch
+	0002-monterey-runtime-optics-framebuffer.patch
 "
 builddir="$srcdir/$pkgname-$_commit"
 
@@ -43,12 +44,15 @@ build() {
 		-DCMAKE_BUILD_TYPE=None \
 		-DCMAKE_INSTALL_PREFIX=/usr \
 		-DCMAKE_INSTALL_LIBDIR=lib \
-		-DXRT_BUILD_DRIVER_MONTEREY=ON
+		-DXRT_BUILD_DRIVER_MONTEREY=ON \
+		-DXRT_FEATURE_WINDOW_PEEK=OFF \
+		-DXRT_FEATURE_DEBUG_GUI=OFF
 	cmake --build build
 }
 
 check() {
-	ctest --test-dir build --output-on-failure
+	# Keep the complete suite serial under crossdirect/QEMU.
+	ctest --test-dir build -j1 --output-on-failure
 }
 
 package() {
@@ -62,4 +66,5 @@ package() {
 sha512sums="
 d4bfb3036d47b0a27a33f65f61592c02a4f92b1c0834cf1a370b03242ba7bf68a22548cc09563618302b280c510cbd8d87844b3ae1a48aa7ab5f598d622b8f7b  monado-oculus-monterey-e160863ad52c0e1c29c8bb7df3e47facdb02288d.tar.gz
 9af53f83f2bca9bcd65cd0945d61d5db683e398707401bfa3cea47c91c5ec37aedab86c02096267e5f696add139fd6206159a0c1f3aa87bc6bea31a734d8b316  0001-monterey-head-frame-startup.patch
+4bc3122077f9b00780e7c07b07f1710a26edda134d364010b06ff939429ac777707850c6dba79e016ad3c98e3e3521bee6ffe0220ec6b19f609d9044c1822dee  0002-monterey-runtime-optics-framebuffer.patch
 "

@@ -14,6 +14,10 @@ draws an upright desktop, tracks your head, and is building an OpenXR runtime."
 > local paths, a LAN IP, and the device serial. Nothing secret (no keys), but a
 > sanitization pass is reasonable future work before wide publication.
 
+## Product requirement
+
+The owner wants a **VR-only headset**, with no desktop mode. Xorg/labwc was a temporary bring-up diagnostic, not the intended shell. Disable its boot service with `tools/disable-desktop-autostart.sh`; the direct VR launcher never restarts a desktop on exit. A native VR shell/compositor is still to be implemented.
+
 ## Status (2026-09-30)
 
 **Working:**
@@ -25,14 +29,18 @@ draws an upright desktop, tracks your head, and is building an OpenXR runtime."
 - **Lens optics**: stock distortion mesh reverse-engineered; wearer-confirmed in a
   standalone X11 diagnostic renderer
 - **Monado** (OpenXR runtime) building and installed
+- **Wi-Fi**: 2.4/5 GHz scans, WPA2 association, DHCP, router/internet ping and DNS
+  verified. Uses relative-offset RMTFS with read-only NV backing, native mapper
+  and TFTP, and the owner's stock CNSS helper in a RAM-only writable environment.
+  Packaged automatic startup and SSH over Wi-Fi are verified across reboot.
+  The five-minute recovery timer remains enabled during bring-up; see
+  [`docs/adsp-wifi.md`](docs/adsp-wifi.md).
 
 **Not yet working / WIP:**
-- **Wi-Fi** — the WLAN firmware (WLFW) is an ADSP protection domain that is never
-  PIL-booted; see [`docs/adsp-wifi.md`](docs/adsp-wifi.md)
 - GPU acceleration (software Lavapipe for now), audio, positional tracking, passthrough
 - Optics integration into the Monado runtime (correction currently lives only in the
   standalone diagnostic renderer)
-- Performance — an optimized renderer is built but **not yet device-tested**
+- Performance — X11 diagnostic ~19.5 fps; direct framebuffer backend in validation. Corrected threaded submission path measures59.7fps renderer/59.8fps MDSS driver; wearer reports definitely better, but motion is still not fully smooth. See `renderer/fast/README.md`.
 - A fully clean-build **boot image** (the rootfs build is reproducible; the boot image
   still needs manual device-name root mounting — see the boot doc)
 

@@ -1,0 +1,31 @@
+--- a/drivers/soc/qcom/pil-q6v5-mss.c
++++ b/drivers/soc/qcom/pil-q6v5-mss.c
+@@ -46,13 +46,25 @@
+ 
+ static void log_modem_sfr(void)
+ {
+-	u32 size;
++	u32 size = 0;
+ 	char *smem_reason, reason[MAX_SSR_REASON_LEN];
+ 
+ 	smem_reason = smem_get_entry_no_rlock(SMEM_SSR_REASON_MSS0, &size, 0,
+ 							SMEM_ANY_HOST_FLAG);
+-	if (!smem_reason || !size) {
+-		pr_err("modem subsystem failure reason: (unknown, smem_get_entry_no_rlock failed).\n");
++	/* Newer firmware may store the reason in the AP/modem partition rather
++	 * than the common SMEM area. Read it without taking a remote lock after
++	 * a crash, just as for the legacy lookup above. This changes diagnostics
++	 * only; restart policy and firmware loading are untouched.
++	 */
++	if (IS_ERR_OR_NULL(smem_reason) || !size) {
++		size = 0;
++		smem_reason = smem_get_entry_no_rlock(SMEM_SSR_REASON_MSS0,
++						&size, SMEM_MODEM, 0);
++		if (!IS_ERR_OR_NULL(smem_reason) && size)
++			pr_info("modem failure reason found in AP/modem SMEM partition\n");
++	}
++	if (IS_ERR_OR_NULL(smem_reason) || !size) {
++		pr_err("modem subsystem failure reason: (unknown, both SMEM lookups failed).\n");
+ 		return;
+ 	}
+ 	if (!smem_reason[0]) {

@@ -8,11 +8,16 @@ command_args="-P -r"
 export LD_PRELOAD=/usr/lib/preload/libqipcrtr4msmipc.so
 
 depend() {
+	need oculus-ipc-security
 	after oculus-mdev
 	before networkmanager wpa_supplicant
 }
 
 start_pre() {
+	# Old bring-up images can carry a dependency cache newer than the device's
+	# unset clock. Enforce the prerequisite even when that cache is stale.
+	/usr/sbin/oculus-stock-runtime start || return 1
+	/usr/sbin/oculus-ipc-security || return 1
 	/usr/sbin/oculus-rmtfs start
 }
 

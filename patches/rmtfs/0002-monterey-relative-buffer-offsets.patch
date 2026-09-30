@@ -1,0 +1,116 @@
+--- a/sharedmem.c
++++ b/sharedmem.c
+@@ -22,6 +22,7 @@
+ 
+ struct rmtfs_mem {
+ 	uint64_t address;
++	bool relative_offsets;
+ 	uint64_t size;
+ 	void *base;
+ 	int fd;
+@@ -277,6 +278,8 @@
+ 		return NULL;
+ 
+ 	memset(rmem, 0, sizeof(*rmem));
++	const char *relative = getenv("RMTFS_MSM8998_RELATIVE_OFFSETS");
++	rmem->relative_offsets = relative && !strcmp(relative, "1");
+ 
+ 	ret = rmtfs_mem_open_rfsa(rmem, 1);
+ 	if (ret < 0 && ret != -ENOENT) {
+@@ -335,59 +338,43 @@
+ {
+ }
+ 
+-static void *rmtfs_mem_ptr(struct rmtfs_mem *rmem, unsigned long phys_address, ssize_t len)
+-{
+-	uint64_t start;
+-	uint64_t end;
+-
+-	if (len < 0)
+-		return NULL;
+-
+-	start = phys_address;
+-	end = start + len;
+-
+-	if (start < rmem->address || end > rmem->address + rmem->size)
+-		return NULL;
+-
+-	return (char*)rmem->base + phys_address - rmem->address;
+-}
+-
+-ssize_t rmtfs_mem_read(struct rmtfs_mem *rmem, unsigned long phys_address, void *buf, ssize_t len)
+-{
+-	off_t offset;
+-	void *ptr;
+-
+-	if (rmem->base) {
+-		ptr = rmtfs_mem_ptr(rmem, phys_address, len);
+-		if (!ptr)
+-			return -EINVAL;
+-
+-		memcpy(buf, ptr, len);
+-	} else {
+-		offset = phys_address - rmem->address;
+-		len = pread(rmem->fd, buf, len, offset);
+-	}
+-
+-	return len;
+-}
+-
+-ssize_t rmtfs_mem_write(struct rmtfs_mem *rmem, unsigned long phys_address, const void *buf, ssize_t len)
+-{
+-	off_t offset;
+-	void *ptr;
+-
+-	if (rmem->base) {
+-		ptr = rmtfs_mem_ptr(rmem, phys_address, len);
+-		if (!ptr)
+-			return -EINVAL;
+-
+-		memcpy(ptr, buf, len);
+-	} else {
+-		offset = phys_address - rmem->address;
+-		len = pwrite(rmem->fd, buf, len, offset);
+-	}
+-
+-	return len;
++/* Monterey firmware supplies byte offsets into the UIO region, not physical
++ * addresses. Opt in explicitly; other devices retain absolute addressing. */
++static int rmtfs_mem_offset(struct rmtfs_mem *rmem, unsigned long address,
++                           ssize_t len, uint64_t *offset)
++{
++    if (len < 0) return -EINVAL;
++    if (rmem->relative_offsets) {
++        *offset = address;
++    } else {
++        if (address < rmem->address) return -EINVAL;
++        *offset = address - rmem->address;
++    }
++    if (*offset > rmem->size || (uint64_t)len > rmem->size - *offset)
++        return -EINVAL;
++    return 0;
++}
++
++ssize_t rmtfs_mem_read(struct rmtfs_mem *rmem, unsigned long address, void *buf, ssize_t len)
++{
++    uint64_t offset;
++    if (rmtfs_mem_offset(rmem, address, len, &offset)) return -EINVAL;
++    if (rmem->base) {
++        memcpy(buf, (char *)rmem->base + offset, len);
++        return len;
++    }
++    return pread(rmem->fd, buf, len, offset);
++}
++
++ssize_t rmtfs_mem_write(struct rmtfs_mem *rmem, unsigned long address, const void *buf, ssize_t len)
++{
++    uint64_t offset;
++    if (rmtfs_mem_offset(rmem, address, len, &offset)) return -EINVAL;
++    if (rmem->base) {
++        memcpy((char *)rmem->base + offset, buf, len);
++        return len;
++    }
++    return pwrite(rmem->fd, buf, len, offset);
+ }
+ 
+ void rmtfs_mem_close(struct rmtfs_mem *rmem)

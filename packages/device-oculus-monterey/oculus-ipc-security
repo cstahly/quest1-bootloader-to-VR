@@ -1,0 +1,20 @@
+#!/bin/sh
+# Apply the owner's stock IPC policy. Does not vote remote processors.
+set -eu
+stock_root=${OCULUS_STOCK_ROOT:-/run/oculus-stock-runtime}
+state=/run/oculus-ipc-security.ready
+[ ! -f "$state" ] || exit 0
+runtime=
+for candidate in "$stock_root/system/apex/com.android.runtime.release" \
+    "$stock_root/system/apex/com.android.runtime"; do
+    if [ -x "$candidate/bin/linker64" ]; then runtime=$candidate; break; fi
+done
+[ -n "$runtime" ] || { echo "Stock Android linker is unavailable" >&2; exit 1; }
+tool=$stock_root/system/vendor/bin/irsc_util
+policy=$stock_root/system/vendor/etc/sec_config
+[ -r "$tool" ] && [ -r "$policy" ]
+# rmtfs exports a musl preload; the stock tool uses Android's bionic instead.
+LD_PRELOAD= LD_LIBRARY_PATH="$runtime/lib64/bionic:$runtime/lib64:$stock_root/system/lib64:$stock_root/system/vendor/lib64" \
+    "$runtime/bin/linker64" "$tool" "$policy"
+# The kernel retains the rules until reboot; don't append duplicates on restart.
+: > "$state"

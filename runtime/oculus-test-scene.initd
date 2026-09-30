@@ -1,0 +1,11 @@
+#!/sbin/openrc-run
+description="Tracked Quest test scene with live diagnostics; no desktop"
+command=/usr/bin/oculus-test-scene
+command_background=true
+pidfile=/run/oculus-test-scene.pid
+output_log=/var/log/oculus-test-scene.log
+error_log=/var/log/oculus-test-scene.log
+depend() {
+    need localmount oculus-recovery-guard
+    after oculus-wifi oculus-controller
+}
