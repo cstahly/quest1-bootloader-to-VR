@@ -85,6 +85,27 @@ cleanly, which looked for a while like a mysterious kernel bug. The fix is one f
    networking/rmtfs fixes. (The boot image still needs the device-name root-mount handling
    described in the boot doc.)
 
+## Binaries — where each one comes from
+
+None of these are committed (they're gitignored). Here's how to obtain or rebuild each:
+
+| Binary | How to get it |
+|---|---|
+| **pmOS rootfs + boot images** | Rebuild via pmbootstrap — see *Reproducing a booting rootfs* above and `docs/boot-bringup.md`. The exact proven-booting *guarded* images live only in local backups, not git. |
+| **`capture-imu`** (headset IMU reader) | Cross-compile `tools/tracking/capture-imu.c` for aarch64 (the headset has no compiler): `pmbootstrap chroot -r -- cc -O2 -static ...`. See `docs/basalt-positional-tracking.md`. |
+| **Basalt `libbasalt.so`** | Build the [mateosss/basalt](https://gitlab.freedesktop.org/mateosss/basalt) fork (implements Monado's VIT ABI); apply `patches/basalt/`. Build **float-only** (`use-double=false`). |
+| **`replay-vit`** (offline VIO runner) | Compile `tools/tracking/replay-vit.cpp` against Basalt's `vit_interface.h`, link `libbasalt.so`. |
+| **Monado runtime** | Build the monado-oculus-monterey port with `patches/monado/`. |
+| **mesa-kgsl** | `packages/mesa-kgsl-monterey/` (pmbootstrap build). *Note:* GPU accel is a dead end on Adreno 540 — see `docs/KGSL-ACCELERATION.md`. |
+
+**Cannot be redistributed (obtain from your own device):**
+- **Meta/Oculus proprietary blobs** — WLAN/ADSP firmware, camera + IMU factory calibration
+  (`camera_calibration_v2.json`, `imu_calibration.json`), and the stock distortion mesh.
+  These are extracted from *your own headset's* stock system image via the on-device
+  calibration store; they are device-specific and Meta's IP.
+- **Stock partition backups** (`boot_b.img`, `system_b.img`, NV, etc.) — your own device
+  dumps, kept in local backups. Required for recovery; device-specific.
+
 ## Credits
 
 - **Block-Flock `pmaports-oculus-monterey`** — the upstream port this builds on
