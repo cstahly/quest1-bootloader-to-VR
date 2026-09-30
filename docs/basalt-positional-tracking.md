@@ -1,5 +1,97 @@
 # Basalt 6DoF positional tracking — state + findings
 
+## Active continuation — visual matching investigation
+
+Update: the experimental patch-rotation initialization produced the exact same
+stationary trajectory/feature counts (still no shared-camera landmarks). It was
+reversed in the host checkout and the library rebuilt; the saved patch is a failed
+experiment, not an accepted change. Only the null-sentinel fix remains applied.
+
+First real movement capture succeeded: `vio-motion-01.bin`, 600 camera publications
+and 22,340 IMU samples. Contact-sheet inspection confirmed fingers substantially
+occluded cameras 1 and 3; cameras 0 and 2 retained room views. Do not use that clip
+as clean validation. Its default replay nonetheless exits 0 with 600 poses, peak
+excursion 0.456 m and endpoint offset 0.369 m; accel-noise 3.0 reduces peak motion
+to 0.235 m with endpoint offset 0.225 m. Lower stationary drift is therefore not a
+justification to ship that weighting. A repeat with all cameras clear was requested;
+owner replied Ready, and `vio-motion-02.bin` capture has been started and cued.
+
+- `replay-vit.cpp` accepts an optional FEATURES.csv output. Counts come from
+  Basalt's pose-feature extension; the implementation exports inverse depth in
+  its `depth` member. The unchanged baseline has median per-camera landmark counts
+  17/3/2/8, median 29 unique landmarks, and **zero shared-camera landmarks in all
+  451 poses**. This is not evidence of working stereo constraints.
+- Independent SIFT correspondence check on the first recorded four views finds
+  19/17/9/8/8/13 ratio matches across the six camera pairs. Comparing all 24 factory
+  camera assignments favors the existing 0/1/2/3 order: 43 matches below normalized
+  epipolar residual 0.01, versus 16 for the next assignment. This is supporting
+  evidence, not calibration acceptance. No calibration order was changed.
+- Basalt frame-to-frame matching predicts translation from calibration but resets
+  patch rotation to identity. An **experimental, host-only** patch initializes
+  cross-camera patch rotation from the local calibrated projection Jacobian.
+  `patches/basalt/0002-experimental-calibrated-patch-rotation.patch` is being tested;
+  do not treat it as accepted or deploy it until replay results are recorded.
+- Device was found in fastboot with slot B unbootable/retry count 0. Followed the
+  existing recovery procedure: `set_active b`, then normal reboot. No images were
+  flashed. USB SSH and Wi-Fi <HEADSET_WIFI_IP> are reachable again. Recovery guard remains
+  active and is explicitly renewed during work. Camera service was stopped despite
+  its existing default-runlevel link; starting that service restored fresh frames.
+- Reinstalled passive record tools in `/run`. **Wi-Fi preflight passed:** 60 camera
+  publications and 4,062 IMU samples, local private `vio-wifi-preflight.bin`.
+- Pending user question: readiness for a 20-second handheld movement recording,
+  moving about half a metre sideways and back while facing the room. **Wait for the
+  actual reply, then start/verify recording and cue movement.** No walking required.
+  The accepted scene remains running; positional tracking is not deployed.
+
+## Current verified checkpoint — replay completion fixed, 2026-09-30
+
+Host-only work; no headset changes in this checkpoint. Basalt base commit:
+`df6e970c8da7636eb401a09e3317fbeaaf829b9a` (mateosss fork, float build).
+
+Two concrete bugs were addressed:
+
+1. The recorder includes about two seconds of IMU after the final camera group.
+   Basalt's estimator consumes IMU as images arrive, with a 300-sample queue.
+   Replay blocked filling that queue after its last image. The replay now validates
+   the complete input first and feeds only the first IMU sample beyond the final
+   image, enough to bracket its integration interval. This recording omits 2,037
+   unused tail samples. The original recording is preserved.
+2. Basalt queues a null state as its completion sentinel, but the VIT wrapper
+   previously made a pose object from it and dereferenced it. Apply
+   `patches/basalt/0001-vit-null-end-of-stream-pose.patch` and rebuild the library.
+
+`tools/tracking/replay-vit.cpp` now stops the tracker, drains its remaining poses,
+and closes output cleanly. It writes to `.csv.partial` until successful completion;
+the final CSV is renamed into place only after checks pass. The strict replay
+requires one pose per camera group with matching timestamps, so dropped output is
+an explicit failure. This is a validation harness, not a general live tracker.
+
+Validation: warnings-as-errors host compilation; six malformed-input checks in
+`tools/tracking/test-replay-input.py`; full unchanged-baseline replay exits 0 with
+451 camera groups and 451 poses. All four comparison runs below exited 0, yielded
+451 finite complete CSV rows, and covered exactly 15.000259 seconds:
+
+| Experiment | accel noise | gyro noise | Endpoint displacement |
+|---|---:|---:|---:|
+| Unchanged baseline | 0.03 | 0.003 | 14.3821 m |
+| Accel weighting only | 3.0 | 0.003 | 0.01216 m |
+| Gyro weighting only | 0.03 | 0.3 | 14.0716 m |
+| Both weightings | 3.0 | 0.3 | 0.04664 m |
+
+These are stationary-recording results, not physical movement acceptance. They
+support investigating accelerometer weighting/calibration, but do not establish
+camera calibration correctness, metric scale, or acceptable behavior during motion.
+Do not deploy the high-noise setting as a validated tracking fix.
+
+Private host outputs: `kali:~/quest-camera-work/replay-audit-fixed/` (three isolated
+variants), `vio-replay-01/poses-fixed.csv` and `replay-fixed.log` (baseline).
+`replay-vit-checked` adds strict per-frame timestamp/count checks; canonical source
+is `tools/tracking/replay-vit.cpp`. Old `replay-vit` is the original broken harness.
+
+Next: inspect actual visual constraints/features and confirm camera/IMU conventions;
+then obtain a controlled motion recording only after the capture stream is verified
+ready. No physical question is pending. Positional tracking is not deployed.
+
 ## Audit correction — 2026-09-30, resumed primary agent
 
 The earlier interpretations below are historical hypotheses, **not established

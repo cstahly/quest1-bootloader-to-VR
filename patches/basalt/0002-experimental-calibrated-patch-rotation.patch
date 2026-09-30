@@ -1,0 +1,59 @@
+diff --git a/include/basalt/optical_flow/frame_to_frame_optical_flow.h b/include/basalt/optical_flow/frame_to_frame_optical_flow.h
+index 87675bd..abc3340 100644
+--- a/include/basalt/optical_flow/frame_to_frame_optical_flow.h
++++ b/include/basalt/optical_flow/frame_to_frame_optical_flow.h
+@@ -331,11 +331,22 @@ class FrameToFrameOpticalFlow final : public OpticalFlowTyped<Scalar, Pattern> {
+         bool valid = true;
+ 
+         Eigen::Vector2f off{0, 0};
++        Scalar patch_angle = 0;
+ 
+         if (use_depth) {
+           Vector2 t2_guess;
+           Scalar _;
+-          calib.projectBetweenCams(t1, depth, t2_guess, _, T_c1_c2, cam1, cam2);
++          if (!calib.projectBetweenCams(t1, depth, t2_guess, _, T_c1_c2, cam1, cam2)) continue;
++          if (matching) {
++            Vector2 px, py;
++            Vector2 tx = t1 + Vector2(1, 0), ty = t1 + Vector2(0, 1);
++            if (!calib.projectBetweenCams(tx, depth, px, _, T_c1_c2, cam1, cam2) ||
++                !calib.projectBetweenCams(ty, depth, py, _, T_c1_c2, cam1, cam2)) continue;
++            Vector2 dx = px - t2_guess, dy = py - t2_guess;
++            // Rotation part of the local calibrated image mapping. Keep the
++            // existing SE2 patch optimizer and reverse-consistency check.
++            patch_angle = std::atan2(dx.y() - dy.x(), dx.x() + dy.y());
++          }
+           off = t2 - t2_guess;
+         }
+ 
+@@ -346,7 +357,7 @@ class FrameToFrameOpticalFlow final : public OpticalFlowTyped<Scalar, Pattern> {
+         valid = t2(0) >= 0 && t2(1) >= 0 && t2(0) < w && t2(1) < h;
+         if (!valid) continue;
+ 
+-        valid = trackPoint(pyr_1, pyr_2, transform_1, transform_2);
++        valid = trackPoint(pyr_1, pyr_2, transform_1, transform_2, patch_angle);
+         if (!valid) continue;
+ 
+         if (masks2.inBounds(t2.x(), t2.y())) continue;
+@@ -356,7 +367,7 @@ class FrameToFrameOpticalFlow final : public OpticalFlowTyped<Scalar, Pattern> {
+ 
+         t1_recovered += off;
+ 
+-        valid = trackPoint(pyr_2, pyr_1, transform_2, transform_1_recovered);
++        valid = trackPoint(pyr_2, pyr_1, transform_2, transform_1_recovered, -patch_angle);
+         if (!valid) continue;
+ 
+         Scalar dist2 = (t1 - t1_recovered).squaredNorm();
+@@ -375,10 +386,10 @@ class FrameToFrameOpticalFlow final : public OpticalFlowTyped<Scalar, Pattern> {
+   }
+ 
+   inline bool trackPoint(const ManagedImagePyr<uint16_t>& old_pyr, const ManagedImagePyr<uint16_t>& pyr,
+-                         const Eigen::AffineCompact2f& old_transform, Eigen::AffineCompact2f& transform) const {
++                         const Eigen::AffineCompact2f& old_transform, Eigen::AffineCompact2f& transform, Scalar initial_angle = 0) const {
+     bool patch_valid = true;
+ 
+-    transform.linear().setIdentity();
++    transform.linear() = Eigen::Rotation2Df(initial_angle).toRotationMatrix();
+ 
+     for (int level = config.optical_flow_levels; level >= 0 && patch_valid; level--) {
+       const Scalar scale = 1 << level;

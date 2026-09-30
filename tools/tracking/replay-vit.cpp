@@ -10,16 +10,18 @@
 #include <vector>
 #include <stdexcept>
 #include <string>
+#include <map>
 
 static void check(vit_result_t r) { if(r!=VIT_SUCCESS)throw std::runtime_error("VIT operation failed"); }
 static uint64_t le(const unsigned char *p,int n){uint64_t x=0;for(int i=n-1;i>=0;i--)x=(x<<8)|p[i];return x;}
 int main(int argc,char **argv){
- if(argc!=4){fprintf(stderr,"Usage: replay-vit CONFIG EVENTS OUTPUT.csv\n");return 2;}
+ if(argc!=4&&argc!=5){fprintf(stderr,"Usage: replay-vit CONFIG EVENTS OUTPUT.csv [FEATURES.csv]\n");return 2;}
  try{
   // Validate the entire file before starting worker threads, and locate the
   // final image. Unbounded trailing IMU blocks the estimator's bounded queue.
   std::ifstream input(argv[2],std::ios::binary);if(!input)throw std::runtime_error("events open failed");
   unsigned char header[13];uint64_t last_camera=0,previous=0;unsigned expected_groups=0;
+  std::vector<uint64_t> camera_times;
   while(true){
    input.read((char*)header,sizeof(header));
    if(input.gcount()==0&&input.eof())break;
@@ -29,19 +31,40 @@ int main(int argc,char **argv){
    previous=timestamp;
    if(!((header[0]=='I'&&size==24)||(header[0]=='C'&&size==307200)))throw std::runtime_error("invalid event type/size");
    std::vector<char> data(size);if(!input.read(data.data(),size))throw std::runtime_error("truncated event payload");
-   if(header[0]=='C'){last_camera=timestamp;expected_groups++;}
+   if(header[0]=='C'){last_camera=timestamp;expected_groups++;camera_times.push_back(timestamp);}
   }
   if(!expected_groups)throw std::runtime_error("no camera events");
   input.clear();input.seekg(0);
   vit_config_t config={argv[1],4,1,false};vit_tracker_t *tracker=nullptr;
-  check(vit_tracker_create(&config,&tracker));check(vit_tracker_start(tracker));
+  check(vit_tracker_create(&config,&tracker));
+  if(argc==5)check(vit_tracker_enable_extension(tracker,VIT_TRACKER_EXTENSION_POSE_FEATURES,true));
+  check(vit_tracker_start(tracker));
   std::string partial=std::string(argv[3])+".partial";
   FILE *out=fopen(partial.c_str(),"w");if(!out)throw std::runtime_error("pose output open failed");
   setvbuf(out,nullptr,_IOLBF,0);
+  FILE *features=nullptr;std::string feature_partial;
+  if(argc==5){
+   feature_partial=std::string(argv[4])+".partial";features=fopen(feature_partial.c_str(),"w");
+   if(!features)throw std::runtime_error("feature output open failed");
+   setvbuf(features,nullptr,_IOLBF,0);
+   fprintf(features,"timestamp_ns,cam0,cam1,cam2,cam3,unique_landmarks,multicamera_landmarks,positive_inverse_depths\n");
+  }
   fprintf(out,"timestamp_ns,x,y,z,qx,qy,qz,qw\n");unsigned poses=0,groups=0;
   auto drain=[&](){while(true){vit_pose_t *pose=nullptr;check(vit_tracker_pop_pose(tracker,&pose));if(!pose)break;
    vit_pose_data_t p;check(vit_pose_get_data(pose,&p));
+   if(poses>=camera_times.size()||(uint64_t)p.timestamp!=camera_times[poses]){
+    vit_pose_destroy(pose);throw std::runtime_error("missing or mismatched camera pose");
+   }
    fprintf(out,"%lld,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g\n",(long long)p.timestamp,p.px,p.py,p.pz,p.ox,p.oy,p.oz,p.ow);
+   if(features){
+    std::map<int64_t,unsigned> cameras;unsigned counts[4],positive=0,shared=0;
+    for(unsigned cam=0;cam<4;cam++){
+     vit_pose_features_t f={};check(vit_pose_get_features(pose,cam,&f));counts[cam]=f.count;
+     for(unsigned j=0;j<f.count;j++){cameras[f.features[j].id]|=1U<<cam;positive+=f.features[j].depth>0;}
+    }
+    for(const auto &item:cameras)shared+=(item.second&(item.second-1))!=0;
+    fprintf(features,"%lld,%u,%u,%u,%u,%zu,%u,%u\n",(long long)p.timestamp,counts[0],counts[1],counts[2],counts[3],cameras.size(),shared,positive);
+   }
    vit_pose_destroy(pose);poses++;}};
   bool final_imu=false;unsigned omitted_imu=0;
   while(input.read((char*)header,sizeof(header))){
@@ -74,8 +97,10 @@ int main(int argc,char **argv){
   if(!input.eof())throw std::runtime_error("event read failed");
   check(vit_tracker_stop(tracker));drain();vit_tracker_destroy(tracker);
   if(fclose(out))throw std::runtime_error("pose output close failed");
-  if(groups!=expected_groups||!poses)throw std::runtime_error("incomplete replay");
+  if(features&&fclose(features))throw std::runtime_error("feature output close failed");
+  if(groups!=expected_groups||poses!=expected_groups)throw std::runtime_error("incomplete replay");
   if(std::rename(partial.c_str(),argv[3]))throw std::runtime_error("pose output rename failed");
+  if(features&&std::rename(feature_partial.c_str(),argv[4]))throw std::runtime_error("feature output rename failed");
   fprintf(stderr,"Replay complete: %u/%u groups, %u poses, %u trailing IMU samples omitted\n",groups,expected_groups,poses,omitted_imu);
   return poses?0:3;
  }catch(const std::exception &e){fprintf(stderr,"%s\n",e.what());return 2;}
