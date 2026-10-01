@@ -826,3 +826,68 @@ The **rootfs** side is reproducible. The **boot image** side is NOT fully consol
   from the build instead of `pmos_root_uuid`. This is entangled with pmbootstrap/initramfs
   internals and with the diagnostic scaffolding (30s pause, port 2323/2324, extra watchdogs)
   that must be STRIPPED for a clean image — a good task to pair with the next boot session.
+
+
+## Reproducibility review — recovered boot tools and host pins (2026-10-01)
+
+`tools/prepare-monterey-boot` is recovered from the original workspace. It validates
+Android header v0/page4096 and an unsigned source ending at aligned payload end;
+restores the owner's template second-stage load address; appends its4096-byte DER
+BootSignature page with the `/boot` length updated. It does not produce a valid
+cryptographic signature and requires the already-unlocked bootloader behavior.
+No device is accessed by this tool.
+
+Offline reproduction using saved `pmos-boot-4k-rootready-raw.img` and owner stock
+`boot_b.img` produced exactly the saved root-ready final image:
+SHA256 `621190ea2880728264953fbb559719e91a6bcbd1d3b36d7cb73262c094d675fb`,
+26161152 bytes; payload26157056, signature4096, second address0x00f00000.
+This verifies finalization of that ramdisk, not clean generation of the ramdisk.
+
+`python3 tools/prepare-4k-boot.py INPUT STOCK_TEMPLATE NEW_OUTPUT` now removes
+`pmos_boot_uuid=`, `pmos_root_uuid=` and existing `pmos_root=` tokens, retains other
+arguments, appends `pmos_root=/dev/mapper/oculus-pmos-root`, requires
+`pmos_force_initramfs`, enforces <512bytes and clears the extended1024-byte field.
+It does not edit ramdisk contents or disable guards. With saved shell-raw input it
+produced484bytes of cmdline and SHA256
+`031075f7f344ff3022eba3b61b33f01b5f8ec5aa8af39409037d1b63588f9646`.
+That differs from the historical path image because the old script blindly chopped
+all tokens after `pmos_boot_uuid`; the recovered wrapper preserves
+`pmos_rootfsopts=defaults`. This new cmdline wrapper is offline-tested, not boot-tested.
+
+Observed build-host source pins (read from Kali, not inferred from current upstream):
+
+| Source | Commit |
+|---|---|
+| https://gitlab.postmarketos.org/postmarketOS/pmbootstrap.git | `fde5aadb8269898a17f3736ef63eba37df1bbaff` |
+| https://gitlab.postmarketos.org/postmarketOS/pmaports.git | `2254bfcf53d13d79136e9c5187480a3582f32cad` |
+| https://github.com/Block-Flock/pmaports-oculus-monterey.git | `7ce0ccce4d4879df9bb27d29a4ee59af7b2c639a` |
+
+Observed pmbootstrap_v3.cfg: device=`oculus-monterey`, ui=`none`,
+aports=`/home/<user>/pmos/pmaports`, work=`/home/<user>/pmos/work`.
+Workdir records edge for native, rootfs_oculus-monterey and buildroot_aarch64.
+The pmbootstrap checkout has the local `pmb/install/format.py` patch. Pins identify
+bases; local grafted packages and the tracked4Kn patch are additional inputs.
+
+Fresh-host configuration recipe: check out those exact base revisions, graft the
+tracked device/testing packages per tutorial02, apply the tracked4Kn patch with
+`git apply --check` first, then run `./pmbootstrap.py init` and select that pmaports
+checkout, device `oculus-monterey`, UI `none`, a private work directory and your own
+username. Verify with `./pmbootstrap.py config device`, `config ui`, `config aports`
+and `config work` before build/install/export. This assembled fresh-host procedure
+has not been executed from an empty cache. If patch context fails, stop and inspect
+`format_partition_with_filesystem`; do not silently skip the4096-byte requirement.
+
+### Clean unattended image remains an integration task
+
+The historical root-ready transformation is preserved in `tools/prepare-root-ready.py`.
+It expects a previously modified ramdisk and is not a clean upstream-initramfs builder.
+It injects a30s readiness pause, USB TCP2324 debug listener, logging changes and
+300s root watchdog while retaining the initramfs recovery process through switch_root.
+Simply removing these breaks `oculus-wifi`'s explicit original-timer preflight and
+recovery-guard takeover. TCP2323 comes from earlier initramfs debug scaffolding.
+A clean conversion must replace those dependencies with a verified guard handoff,
+remove both listeners and debug login installation, restore intended inittab logging,
+and check cold boot/recovery/SSH without removing the independent hardware watchdog.
+No tested clean conversion is available. Do not present deleting the pause/listeners
+as a reproduced unattended install. This remaining blocker is tracked in
+[reproducibility gaps](reproducibility-gaps.md).

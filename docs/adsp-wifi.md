@@ -479,3 +479,88 @@ persistent NV writes or automatic processor startup.
 2. Did they find a **`boot_adsp`** knob (or try any ADSP vote via fastrpc/msm_subsys)?
 3. What **state** did ADSP actually show (`/sys/bus/msm_subsys/devices/subsys*/state`) —
    ever ONLINE, or stuck, or erroring on the lpass iomap line?
+
+## Owner firmware and Android runtime extraction recipe (2026-10-01)
+
+This recipe uses **your own raw partition backups**, outside Git. Source paths were
+rechecked read-only against this owner's stock images on 2026-10-01. Hashes in
+[assets-inventory.md](assets-inventory.md) identify that owner's firmware revision;
+other stock revisions need their own manifest. A matching hash is an identity
+check, not proof that an arbitrary modem image is safe for this device/kernel.
+
+Prerequisites: a Linux host with `e2fsprogs` (`debugfs`), `mtools` (`mcopy`), Python3,
+and `sha256sum`; raw (not Android sparse) stock `system_b.img` and `modem_b.img`
+from the same known-good stock installation. On macOS, the verified debugfs was
+`/opt/homebrew/opt/e2fsprogs/sbin/debugfs`; use `shasum -a 256` for hashing there.
+If obtaining the missing modem backup from rooted stock Android, first resolve
+`/dev/block/by-name/modem_b`, then use the same read-only-source `dd`/`adb pull`
+procedure in [tutorial 01](tutorial/01-back-up-stock.md). Do not flash it.
+
+Set absolute paths; create a new private extraction directory (no spaces in these
+paths, because `debugfs` has its own command parser):
+
+```sh
+system=/absolute/private-backups/system_b.img
+modem=/absolute/private-backups/modem_b.img
+out=/absolute/private-work/owner-wifi-extract
+umask 077
+mkdir "$out"
+mkdir "$out/system-firmware" "$out/modem-image" "$out/linux-firmware" "$out/wifi-firmware"
+python3 tools/inspect-fat16-firmware.py "$modem" --verify-modem > "$out/modem-completeness.txt"
+python3 tools/inspect-fat16-firmware.py "$modem" --all > "$out/modem-source-sha256.tsv"
+# debugfs is read-only unless explicitly given -w; never add -w.
+debugfs -R "rdump /system/vendor/firmware $out/system-firmware" "$system"
+mcopy -i "$modem" '::/image/*' "$out/modem-image/"
+# FAT short-name spelling may be upper case; Linux firmware requests are lower case.
+for src in "$out/modem-image/"*; do
+    [ -f "$src" ] || continue
+    name=$(basename "$src" | tr '[:upper:]' '[:lower:]')
+    case "$name" in
+        modem.*|modemr.jsn|modemuw.jsn|mba.mbn|wlanmdsp.mbn)
+            cp "$src" "$out/wifi-firmware/$name" ;;
+    esac
+    case "$name" in
+        bdwlan.*|adspr.jsn|adspua.jsn|wlanmdsp.mbn)
+            cp "$src" "$out/linux-firmware/$name" ;;
+    esac
+done
+cp "$out/system-firmware/firmware/"adsp.* "$out/linux-firmware/"
+mkdir -p "$out/linux-firmware/wlan/qca_cld"
+debugfs -R "dump /system/vendor/etc/wifi/WCNSS_qcom_cfg.ini $out/linux-firmware/wlan/qca_cld/WCNSS_qcom_cfg.ini" "$system"
+(cd "$out/wifi-firmware" && sha256sum ./* > SHA256SUMS && sha256sum -c SHA256SUMS)
+(cd "$out/linux-firmware" && find . -type f -exec sha256sum {} +) > "$out/linux-firmware.sha256"
+```
+
+`debugfs rdump` creates the basename `firmware/` under the supplied destination.
+The source/destination checklist is:
+
+| Stock source | Private/rootfs destination and purpose |
+|---|---|
+| `modem_b.img:/IMAGE/MBA.MBN`, `MODEM.MDT`, `MODEM.B*` | Lowercase filenames in `/usr/share/oculus-wifi/firmware/`; complete MBA and split modem ELF, including `modem.b19` |
+| Same `/IMAGE/MODEMR.JSN`, `MODEMUW.JSN`, `WLANMDSP.MBN` | Same service directory; mapper/TFTP/modem WLAN domain inputs |
+| Same `/IMAGE/BDWLAN.*`, `ADSPR.JSN`, `ADSPUA.JSN`, `WLANMDSP.MBN` | Lowercase filenames in `/lib/firmware/`; board variants and DSP descriptors |
+| `system_b.img:/system/vendor/firmware/adsp.*` | `/lib/firmware/adsp.*`; copy the complete available split family |
+| Same `/system/vendor/etc/wifi/WCNSS_qcom_cfg.ini` (firmware-tree name is an absolute symlink) | `/lib/firmware/wlan/qca_cld/WCNSS_qcom_cfg.ini` |
+| Same `/system/vendor/bin/cnss-daemon`, `/system/vendor/etc`, `/system/vendor/lib64`, `/system/lib64` (including `vndk-29`, `vndk-sp-29`), `/system/apex/com.android.runtime.release` | Kept together on the intact stock system filesystem; consumed by read-only runtime bind, **not independently copied into musl `/usr/lib`** |
+
+On this owner's revision the split modem payload checklist is `modem.b00` through
+`b11`, then `b13`, `b14`, `b15`, `b17` through `b22`, plus `modem.mdt`. Missing
+`b12`/`b16` is not itself a defect: the metadata validator determines which segments
+have payload. Do not synthesize empty segments or substitute another revision.
+The resulting Wi-Fi directory has 26 firmware inputs plus its generated SHA256SUMS.
+
+To stage in an **offline pmOS rootfs** after reviewing its existing files, copy
+`wifi-firmware/.` to `/usr/share/oculus-wifi/firmware/` and `linux-firmware/.` to
+`/lib/firmware/`. Preserve original files if different; do not overwrite unrelated
+firmware. Keep the Wi-Fi directory mode0700/files0600. On-device service startup
+runs `sha256sum -c SHA256SUMS` before copying firmware into RAM. An updated manifest
+must be generated from the exact bytes installed, not copied from this owner's table.
+
+The Android executable dependencies require no new extraction step on the headset:
+`oculus-stock-runtime start` resolves the opposite stock slot via the boot command
+line, mounts it `ro,noload,nosuid,nodev,noexec`, and creates the narrow executable
+bind `/run/oculus-stock-runtime/system`. Thus this method **requires an intact stock
+system in the other slot**. The Wi-Fi launcher then exposes only that tree, ordinary
+null/random devices, read-only proc, and RAM-only data to `cnss-daemon`. Preserve
+`RMTFS_MSM8998_RELATIVE_OFFSETS=1`, `rmtfs -P -r`, and the recovery guards. Extracting
+firmware does not authorize a modem vote or establish safe shutdown behavior.

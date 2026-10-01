@@ -67,8 +67,11 @@ a charger reboot; an unplugged Wi-Fi shutdown is needed to leave this device off
 
 ## Reproduction gaps the tutorial must not hide
 
-- `prepare-monterey-boot` is referenced by historical scripts but **not included in
-  this repository**. The hard-coded `prepare-4k-boot.py` is a historical recipe.
+See the updated [collection-agent resolution map](../reproducibility-gaps.md) for
+verified recovered procedures and the hard stops that remain.
+
+- Boot finalizer and path-based cmdline wrapper are now included and offline-checked.
+  A fresh guarded ramdisk and unattended clean-image conversion remain incomplete.
 - pmbootstrap initialization was pre-seeded on the original build host. Exact clean
   setup, pinned dependencies and all private asset extraction steps need packaging.
 - Stock code/firmware, per-unit calibration, lens assets and backups are different

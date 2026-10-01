@@ -39,7 +39,8 @@ Basalt is unfinished research.
 
 - **The boot image needs one hand step (stage 3).** The rootfs rebuilds clean from
   source; the boot image still mounts root by device name (to dodge a 512-byte cmdline
-  truncation) and needs legacy footer preparation using *your own* stock `boot_b`. That helper is not included yet, and runtime/asset packaging also remains.
+  truncation) and needs legacy footer preparation using *your own* stock `boot_b`. The helper is now tracked and offline-verified; clean guarded-ramdisk integration
+  and runtime/asset packaging still remain.
 - **Some blobs are yours only.** WLAN/camera/IMU firmware + factory calibration are
   private inputs from your own stock runtime and calibration partitions (stages 1, 5), not shipped here. We document the formats, not the blobs.
 

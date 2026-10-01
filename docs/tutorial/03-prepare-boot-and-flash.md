@@ -10,11 +10,12 @@ The non-turnkey stage. A clean `boot.img` won't boot as-is, for two device reaso
 2. **Legacy boot footer.** The tested unlocked boot path needs a `BootSignature` page, grafted from *your own*
    stock `boot_b` (stage 1). That's why the backup wasn't optional.
 
-**Reproduction blocker:** `prepare-monterey-boot` is an external historical helper,
-not included in this repository. `tools/prepare-4k-boot.py` references it and hard-codes
-one developer's paths. Neither is currently a self-contained public installation step.
-Port/review that helper before following the historical commands below. Copying a
-legacy footer is not cryptographically signing changed payloads with Oculus keys.
+The recovered finalizer is now tracked as `tools/prepare-monterey-boot`.
+`tools/prepare-4k-boot.py` now accepts paths and performs the short device-name
+cmdline conversion before calling it. Neither tool patches the initramfs or flashes
+hardware. A guarded first-boot ramdisk is still required; see the explicit remaining
+ramdisk/clean-image gap in [the review brief](../reproducibility-gaps.md).
+Copying a legacy footer does not cryptographically sign changed payloads.
 
 The cmdline must fit entirely in the first 512 bytes and preserve required boot/recovery
 arguments. A binary `grep` does not prove the bootloader sees the intended cmdline;
@@ -23,9 +24,9 @@ parse the Android header and check the primary field and cleared extension.
 ## Finalize + flash
 
 ```
-prepare-monterey-boot <exported boot.img> $VELA/<serial>/boot_b.img <finalized-boot.img>
-# make sure the cmdline mounts root by device name, not UUID:
-grep -a pmos_root <finalized-boot.img>        # → /dev/mapper/oculus-pmos-root
+python3 tools/prepare-4k-boot.py <unsigned-exported-boot.img> <owner-stock-boot_b.img> <new-finalized-boot.img>
+# Prints cmdline length, complete cmdline, payload size and output SHA256.
+# Requires v0/page4096, pmos_force_initramfs and a cmdline under512 bytes.
 ```
 
 `tools/prepare-4k-boot.py` is the reference for how the guarded image was assembled; see
@@ -48,7 +49,7 @@ fastboot reboot
 ## Check
 
 - both flashes OKAY
-- cmdline greps as device-name mount (above), image carries a BootSignature
+- tool validates the header and short device-name cmdline; image carries a BootSignature
 - you flashed **B only** — not A, bootloader, modem, or NV
 
 ## Notes

@@ -1,78 +1,96 @@
-# Reproducibility gaps — review brief
+# Reproducibility gaps — collection-agent review
 
-Written 2026-10-01 as input to a final end-to-end review (logic + technical). The
-question this answers is **not** "is anything leaked / is the tone right" — it is:
-**if a stranger with an unlocked Quest 1 clones this repo and follows the tutorial, where
-do they hit a wall because a required artifact/step/value is not actually here?**
+Updated 2026-10-01 after source, retained-image and build-host audit. This is the
+collection agent's index to what can actually be reconstructed. **A fresh unlocked
+Quest-to-playground install is not yet end-to-end verified.** Recovered instructions
+and offline tests close specific holes; they do not establish a clean hardware run.
+The headset remained parked in fastboot throughout this documentation review.
 
-The docs are honest that these gaps exist (see tutorial `README.md` "Important
-reproduction gaps" and `09-status-and-next.md`). But an honest admission of a hole is not
-a filled hole. For an actual reproducer these are hard stops. Tracked here so the final
-review closes them deliberately instead of leaving them scattered across pages.
+## Resolution map
 
-## Hard stops — reproduction dies here
+| Area | Included evidence / procedure | Remaining boundary |
+|---|---|---|
+| Rootfs | [Boot log: source pins and observed config](boot-bringup.md#reproducibility-review--recovered-boot-tools-and-host-pins-2026-10-01), tutorial02, tracked4Kn patch | New empty-cache build not run; package mirrors are not frozen |
+| Boot footer | `tools/prepare-monterey-boot`; saved raw input reproduces final root-ready image byte-for-byte | This proves footer assembly, not source-to-ramdisk reproduction |
+| Short cmdline | Path-parameterized `tools/prepare-4k-boot.py`; offline regression test | New wrapper preserves extra arguments and has not booted on hardware |
+| Guarded ramdisk | Historical `tools/prepare-root-ready.py` plus boot log and retained unsigned image | Script still depends on an earlier modified ramdisk and historical paths |
+| Owner Wi-Fi assets | [Per-file source/checklist and extraction recipe](adsp-wifi.md#owner-firmware-and-android-runtime-extraction-recipe-2026-10-01) | Requires readable owner stock images, intact runtime and compatible firmware revision |
+| Camera/IMU/optics | [Read-only extraction paths, commands, sizes and owner hashes](CAMERA-ROADMAP.md#reproducing-owner-calibration-and-optics-extraction-2026-10-01) | Unit calibration hashes are not universal acceptance values |
+| Service assembly | [Ordered runtime install and startup](../runtime/README.md) | Assembled procedure not clean-installed; original timer adoption still required |
+| Native Basalt | [Source/package pins, bundle hashes, build flags and metric definitions](basalt-positional-tracking.md#native-runtime-reproducibility-review-2026-10-01), tracked build/bundle tools | Complete transitive source lock and clean baseline configure/build remain open |
+| Current research | [Checkpoint](tutorial/09-status-and-next.md) and tracking/camera logs | CPU invalidation is built, never run on device; r8 and prediction are not accepted defaults |
 
-### 1. Stage 3 boot image — the showstopper
-`prepare-monterey-boot`, the finalizer that turns the exported `boot.img` into a bootable
-image, is **not in the repo** (absent from tracked files). The only reference,
-`tools/prepare-4k-boot.py`, hardcodes one developer's paths. A reader therefore **cannot
-produce a boot image at all** → never reaches first boot → stages 4–10 are unreachable.
-Nothing else matters until this is closed.
+## Hard stops still open
 
-Needs:
-- the actual finalizer script, de-hardcoded (no developer-specific paths);
-- the exact recipe for the device-name root-mount (`pmos_root=/dev/mapper/oculus-pmos-root`,
-  the "cleaner fix" not yet in the port initramfs);
-- the recipe for stripping the guarded bring-up scaffolding (30 s pause, TCP 2323/2324,
-  extra watchdogs) into a clean unattended image.
+### 1. Source-to-guarded-ramdisk and clean unattended boot
 
-### 2. Owner-blob extraction — no recipe, and three stages need it
-`docs/assets-inventory.md` lists where **the author's** copies sit on the author's
-Kali/Mac. It is **not** a procedure for a new user to pull the equivalents off **their
-own** headset. There is no runnable "extract file X from partition/path Y on a stock
-device, expected filename, expected sha256" manifest. Without it:
-- **Stage 5 (Wi-Fi):** can't stage WLAN firmware + `cnss-daemon` + vndk libs. The doc
-  says firmware extraction "is not yet a complete generic tutorial command," and the
-  filename manifest the runtime expects under `/usr/share/oculus-wifi/firmware` is not
-  published as a checklist.
-- **Stage 6 (optics):** can't obtain `distortion-mesh.bin`.
-- **Stage 10 (cameras):** can't obtain the `/persist` camera/IMU intrinsics/extrinsics
-  (explicitly a TODO, not provided).
+The missing footer helper is recovered and runnable. Test:
 
-Needs: a per-file extraction manifest — source partition/path on a *stock* device, how to
-pull it, expected filename + sha256 — distinct from the author-location inventory.
+```sh
+python3 tools/test-prepare-boot.py
+python3 tools/prepare-monterey-boot OWNER_UNSIGNED_RAW OWNER_STOCK_BOOT NEW_OUTPUT
+```
 
-### 3. No single install that assembles the headset
-`09-status-and-next.md` admits it: copying `packages/*` does **not** reproduce the device
-— the `runtime/` guard/scene/camera services are not packaged into the pmaports build. A
-reader who reaches a shell then has to hand-install every service by reverse-engineering
-the repo. There is no ordered bring-up (install script / meta-package / numbered list)
-that turns "booted rootfs" into "the headset you have."
+Saved root-ready unsigned input is now retained under vela backups with a hash in
+[assets inventory](assets-inventory.md), rather than depending on `/private/tmp`.
+It reproduces the known final image SHA256
+`621190ea2880728264953fbb559719e91a6bcbd1d3b36d7cb73262c094d675fb`.
+A fresh exported upstream ramdisk is **not equivalent** to that saved guarded input.
+The historical ramdisk scripts must be consolidated into a parameterized transformation
+from pinned upstream initramfs, with tests for each hook and switch_root behavior.
 
-Needs: one ordered install path from booted rootfs → full headset (packages + runtime
-services, in dependency order).
+A clean unattended image cannot be made by deleting the30s pause, TCP2323/2324 and
+`sleep300`: Wi-Fi preflight checks those original timer processes, and the renewable
+guard adopts them. Refactor and verify that handoff before removing debug scaffolding.
+Preserve the independent hardware watchdog. No tested clean-image removal recipe
+exists yet; the report must retain this as a blocker.
 
-## Secondary gaps — milestone reachable, but under-specified
+### 2. Baseline packages and native dependency lock
 
-- **Stage 2 (rootfs):** clean-host pmbootstrap **init/config is undocumented** — which
-  device profile, UI selection, and pinned `pmbootstrap` / `pmaports` commits. The 4Kn
-  patch targets a specific pmbootstrap version; if upstream moved it may not apply, with
-  no fallback noted.
-- **Stage 7 (Basalt native):** the on-headset path depends on a **private 19 MB
-  dependency bundle with no pinned versions or build manifest** — not reproducible from
-  what is published. (Also reconcile the probe figures: tutorial 07/09 say 301/301 poses,
-  43 ms median / 69 ms max; `tools/tracking/README.md` says 601/601 groups and 40 ms /
-  66 ms for the 15 Hz case — confirm which run is quoted so they agree.)
-- **Renderer build:** OK as-is — `renderer/fast/README.md` gives the chroot build deps.
+The current Monado APKBUILD is experimental r8. The installed orientation-only
+baseline was r3. The retained r3 APK was identified from PKGINFO and hashed; its source recipe is
+recoverable at `b89f021` as documented in the tracking log. Rebuild and verify it
+before promising a byte-identical baseline from fresh dependencies. Source flags and versions
+of the19MB headless Basalt bundle are now recorded, and library hashes recomputed,
+but a complete transitive lock/build recipe and second clean build remain incomplete.
+The Bionic camera build still depends on matching owner libc/libdl and Linux LLVM;
+the command is documented but a pinned standalone toolchain recipe is not established.
 
-## Priority order to actually close it
-1. Ship the boot finalizer + clean-image recipe (unblocks first boot — everything else is
-   downstream of this).
-2. Write the owner-asset extraction manifest (unblocks Wi-Fi / optics / cameras).
-3. One ordered install path, booted rootfs → full headset.
+### 3. End-to-end acceptance
 
-## Non-defect decisions for the owner (not blockers, but call them)
-- `assets-inventory.md` is the one file that must never go public — it maps every owner
-  blob + the SSH key location and concentrates the Kali LAN IP, username, device serial,
-  and local paths. Fine for this private repo; decide whether to mark it "never publish"
-  more loudly or split it out.
+Run the ordered install on an independent checkout/build root only after the two
+items above are resolved. Record input hashes, package manifests, generated image
+hashes, boot/SSH, Wi-Fi association, gravity initialization, visible scene, four fresh
+camera streams, trigger renewal, guard expiry/recovery and cold boot. The existing
+owner's historical successes validate components, not this newly assembled process.
+Physical tracking, low-light robustness, passthrough geometry and photon-to-display
+latency are separate unfinished acceptance criteria.
+
+## Corrections the report must preserve
+
+- The author-location inventory is distinct from the new stock-source extraction
+  recipes. Neither contains blobs, keys or PSKs. Unit-specific hashes identify the
+  owner's evidence; another headset should usually differ for calibration.
+- Factory camera/IMU calibration came from GPT `private` mounted as Android `/persist`,
+  **not** the GPT partition named `persist`.
+- The mesh is `/system/etc/calibration/distortion-mesh.bin`; HMD config is
+  `/system/etc/xrs-hmdconfig.capnp.bin`. WLAN INI bytes are at
+  `/system/vendor/etc/wifi/WCNSS_qcom_cfg.ini`, not its absolute firmware symlink.
+- Native301/301 at43/69ms is a live15Hz run;40/66ms is recorded15Hz replay;
+  601/601 is a30Hz four-camera run. Different workloads and timing origins.
+- Historical exposure request/readback mismatches are not proof of sensor-command
+  failure: stale CPU metadata was found. The verified ION invalidate ABI supports a
+  pending experiment, not a demonstrated fix.
+- The ARM toolchain file was already tracked; this audit verified it against Kali.
+  It was not an outstanding missing-file blocker.
+
+## Availability to the collection agent
+
+All source/recipe/evidence summaries above are tracked in this repository. Deep
+commands and exact values remain in matching bring-up logs; tutorial pages link to
+them. Private binary assets remain on the exact hosts/paths in `assets-inventory.md`.
+The collection agent can use the tracked hashes without copying private contents.
+Local access to those hosts is still necessary to rerun binary tests; a clone alone
+cannot supply private calibration or proprietary firmware. Before publication,
+review the owner-location inventory separately: it contains identifying paths and
+network details even though it contains no credential values.

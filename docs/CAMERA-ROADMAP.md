@@ -1109,3 +1109,78 @@ holding the dequeued frame, before ANY CPU metadata/image read. The complete
 mapped buffer is311296bytes, containing307840 logical bytes. Stock uses full
 mapped length. Whether this resolves the observed stale data still needs a
 bounded hardware experiment; no operation was executed during this audit.
+
+## Reproducing owner calibration and optics extraction (2026-10-01)
+
+Source paths below were rechecked with read-only `debugfs` against the retained
+stock images. These are **input acquisition commands**, not an instruction to
+write calibration to the headset. Use the same physical unit's camera and IMU
+calibration together; another owner's hashes/JSON are not interchangeable.
+
+Start from a raw `private.img` backup and the unit's untouched stock system image.
+Android mounts the GPT partition **private** at `/persist`; the GPT partition
+named **persist** is not the source of the files below. From rooted stock Android,
+resolve `ls -l /dev/block/by-name/private` and copy it using the same procedure as
+[tutorial 01](tutorial/01-back-up-stock.md):
+
+```sh
+# Rooted Android shell: read the partition, write only an ordinary backup file.
+dd if=/dev/block/by-name/private of=/sdcard/owner-private-readonly.img bs=4M
+# Host shell:
+adb pull /sdcard/owner-private-readonly.img /absolute/private-backups/private.img
+```
+
+This owner's partition was67108864bytes. Record your own partition size and SHA256;
+size alone neither validates its contents nor identifies the correct partition.
+A temporary recovery/debug root shell may also read the resolved partition; stock
+root is a prerequisite of this example, not a capability of locked Android.
+
+On Linux install/use `e2fsprogs`; on this Mac debugfs lives at
+`/opt/homebrew/opt/e2fsprogs/sbin/debugfs`. Set paths outside the repository, without
+spaces (debugfs parses its own command string), and use a new extraction directory:
+
+```sh
+private=/absolute/private-backups/private.img
+system=/absolute/private-backups/system_b.img
+out=/absolute/private-work/owner-calibration-extract
+umask 077
+mkdir "$out"
+debugfs -R 'ls -p /calibration' "$private"
+for name in camera_calibration.json camera_calibration_v2.json imu_calibration.json mag_calibration.json; do
+    debugfs -R "dump /calibration/$name $out/$name" "$private"
+    test -s "$out/$name" || exit 1
+done
+debugfs -R "dump /system/etc/calibration/distortion-mesh.bin $out/distortion-mesh.bin" "$system"
+debugfs -R "dump /system/etc/xrs-hmdconfig.capnp.bin $out/xrs-hmdconfig.capnp.bin" "$system"
+test -s "$out/distortion-mesh.bin" && test -s "$out/xrs-hmdconfig.capnp.bin"
+(cd "$out" && sha256sum ./* > SHA256SUMS && sha256sum -c SHA256SUMS)
+```
+
+Do not add debugfs `-w`. macOS may substitute `shasum -a 256` for `sha256sum`.
+`xrs-hmdconfig.capnp.bin` is under `/system/etc`, **not** its calibration subdirectory.
+The observed output checklist and reference hashes are:
+
+| Output | Observed bytes | SHA256 on this unit/revision |
+|---|---:|---|
+| `camera_calibration.json` |1335|`d3583869514f36b837a104d51d30ebc9bec946c3fd2eed9e92f4751104ba46cd`|
+| `camera_calibration_v2.json` |5264|`69b48eb1114f971c8aec3c6799161c07debdb59a93eb74205e5caf3d914904ec`|
+| `imu_calibration.json` |2310|`407ce90f8c5e80e800aa526a8f0a064687483effff6ce3c22acc773fba57d730`|
+| `mag_calibration.json` |249|Not previously inventoried; retain and hash locally, not used by the current pipeline|
+| `distortion-mesh.bin` |52368|`ee995926697408aaa0c15b6747d0163661bfaad653c861d84b50009cdfb45bd5`|
+| `xrs-hmdconfig.capnp.bin` |560|`cd1f1eaa2a261f0c868ee9a6e0159e2313d8cbda217a550491ae7599bf330346`|
+
+`tools/tracking/prepare-replay.py` consumes camera v2 and IMU JSON to construct the
+Basalt replay/calibration inputs; `tools/tracking/extract-head-offset.py` consumes
+IMU `DeviceFromImu`. `tools/camera/preview-calibration.py` and the passthrough-map
+builder consume camera v2, and the renderer consumes the mesh. The stock hmdconfig
+is preserved as source evidence but was not used to generate the accepted mesh.
+See [tracking/optics log](tracking-optics-performance.md#stereo-and-lens-optics-wearer-confirmed-in-diagnostic-renderer)
+for mesh layout, tested parser, and owner-specific optical-center adjustments.
+Extracting a stock mesh does **not** validate these center adjustments for another
+headset/user or provide calibrated depth-aware passthrough stitching.
+
+Keep original partition images, extracted files, and manifests in the private
+locations described in [assets-inventory.md](assets-inventory.md). Do not commit
+factory JSON, image data, or proprietary mesh/config bytes. The commands above
+were reconstructed from verified source entries; this audit did not recapture
+partitions from the headset or change any device files.

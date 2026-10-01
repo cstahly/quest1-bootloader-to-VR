@@ -32,7 +32,9 @@ git apply <this-repo>/patches/pmbootstrap-monterey-4k.patch
 
 **3. Initialize/configure, then build + export:**
 
-The original host already had pmbootstrap configured for `oculus-monterey`. A fresh
+Exact observed source pins and a fresh-host configuration recipe are now recorded in
+[the boot log](../boot-bringup.md#reproducibility-review--recovered-boot-tools-and-host-pins-2026-10-01).
+The original host used `oculus-monterey`, UI `none`, and the `edge` channel. A fresh
 host must initialize it against the intended pmaports checkout and select the device,
 architecture and intended minimal userspace. Do not blindly accept prompts with
 `yes`; the exact clean-host configuration is an outstanding reproduction item.

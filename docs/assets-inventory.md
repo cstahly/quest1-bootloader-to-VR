@@ -324,3 +324,20 @@ hash of build caches or a claim that all historical staging paths still exist.
 | Mac (local; vela mounted) | `/Users/<user>/work/quest-pmos-bringup/camera-work/vio-motion-04-marked.bin` | `7b9d66064d8260a14c03ee4fff1b486123638c2ce855b71031da9aafa6f1d2e8` |
 | Mac (local; vela mounted) | `/Users/<user>/work/quest-pmos-bringup/camera-work/vio-record-01.bin` | `86180baa83c11b0da51e2b1e5c99ef344da41be9a65bf4a8b378ca96785f3e09` |
 | Mac (local; vela mounted) | `/Users/<user>/work/quest-pmos-bringup/camera-work/vio-wifi-preflight.bin` | `8f0c94023d74116bc77946e4afaa29087c6340b134bb7506ec36d144b6897a93` |
+
+## Recovered unsigned guarded boot input
+
+Retained from the temporary development directory during the reproducibility review.
+This preserves the tested ramdisk; it does not replace a source-to-ramdisk build recipe.
+
+| Host | Exact path | SHA256 |
+|---|---|---|
+| Mac (local; vela mounted) | `/Volumes/vela/Backups/quest1-recovery/pmos/4k-bringup/pmos-boot-4k-rootready-raw.img` | `3cb78145996a5dfe53714ff563ea8ad1cc0a9be6e49544ea56e87c7368146655` |
+
+## Retained orientation-only Monado package
+
+PKGINFO verifies aarch64 r3; this is a retained historical artifact, not a new clean rebuild.
+
+| Host | Exact path | SHA256 |
+|---|---|---|
+| Mac (local) | `/Users/<user>/work/quest-pmos-bringup/monado-oculus-monterey-25.1.0_git20260822-r3.apk` | `23cc2ab039bd340424dd277afa51cecf647a1506cf9c3b5efc254ff1623fd160` |

@@ -2,6 +2,14 @@
 
 Installed and boot-verified, 2026-09-30. Native diagnostic scene, not a desktop or VR home.
 
+For source/build/install destinations and dependency order, use the
+[ordered runtime assembly](../runtime/README.md). That newly consolidated sequence
+has not been validated as a clean install; the evidence below is the historical
+owner-device test. Current installed fallback is orientation-only with the single
+composite camera wall. r5 positional tracking was isolated; r8 and CPU cache
+invalidation remain uninstalled experiments. Earlier counts and slot retries below
+are historical observations, not a current device-state query.
+
 The owner requested boot-to-test-scene, live data visualization, and a controller
 trigger to restart the watchdog countdown. The old rule to never alter the fixed
 software timer is superseded only for this explicit change. The hardware watchdog
