@@ -1,0 +1,12 @@
+# Backstop for the pre-commit hook, which a clone can skip or never enable.
+# PII_PATTERNS is an optional repository secret: exact strings to block, one per line.
+name: pii-guard
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: tools/check-pii.sh --tree
+        env:
+          PII_PATTERNS: ${{ secrets.PII_PATTERNS }}

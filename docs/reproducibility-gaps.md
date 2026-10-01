@@ -91,6 +91,6 @@ commands and exact values remain in matching bring-up logs; tutorial pages link 
 them. Private binary assets remain on the exact hosts/paths in `assets-inventory.md`.
 The collection agent can use the tracked hashes without copying private contents.
 Local access to those hosts is still necessary to rerun binary tests; a clone alone
-cannot supply private calibration or proprietary firmware. Before publication,
-review the owner-location inventory separately: it contains identifying paths and
-network details even though it contains no credential values.
+cannot supply private calibration or proprietary firmware. Hosts, users and the
+serial in that inventory are placeholders; the owner's real values live in the
+gitignored `local.env` (see `local.env.example` and the README's contributing notes).

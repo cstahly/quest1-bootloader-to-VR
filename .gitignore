@@ -60,3 +60,7 @@ subsystem_restart.c
 syncboss_spi.c
 syncboss_sysfs.c
 syncboss_protocol.h
+
+# --- Personal data: real values behind the doc placeholders (see local.env.example) ---
+local.env
+.pii-patterns

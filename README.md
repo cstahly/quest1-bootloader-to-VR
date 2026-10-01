@@ -15,9 +15,9 @@ draws an upright desktop, tracks your head, and is building an OpenXR runtime."
 > deeper raw bring-up logs it points back to.
 
 > ⚠️ **Work in progress, and these are working notes.** The docs under `docs/` are
-> real bring-up logs written for continuity between sessions — they still contain
-> local paths, a LAN IP, and the device serial. Nothing secret (no keys), but a
-> sanitization pass is reasonable future work before wide publication.
+> real bring-up logs written for continuity between sessions. Personal details are
+> replaced with placeholders such as `<SERIAL>`, `<BUILD_HOST_IP>` and `/home/<user>`;
+> see [Contributing](#contributing-keep-personal-data-out).
 
 ## Product requirement
 
@@ -98,6 +98,24 @@ None of these are committed (they're gitignored). Here's how to obtain or rebuil
   partitions; see the tutorial's backup and camera chapters.
 - **Stock partition backups** (`boot_b.img`, `system_b.img`, NV, etc.) — your own device
   dumps, kept in local backups. Required for recovery; device-specific.
+
+## Contributing: keep personal data out
+
+Docs and tools use placeholders instead of anyone's real details: `<SERIAL>`,
+`<BUILD_HOST_IP>`, `<HEADSET_WIFI_IP>`, `<LAN_GATEWAY_IP>`, `<LAN_SUBNET>`, and
+`<user>` in `/Users/<user>`, `/home/<user>`. Once per clone:
+
+```
+cp local.env.example local.env          # your real values; gitignored
+git config core.hooksPath .githooks     # pre-commit runs tools/check-pii.sh
+```
+
+The hook blocks commits that add private LAN IPs, home-directory paths, personal email
+addresses or private keys, plus any exact strings you list one per line in
+`.pii-patterns` (gitignored) — your serial, your name. CI runs the same check on every
+push and pull request, with the repository secret `PII_PATTERNS` supplying the exact
+strings. Notes that need real values (hosts, paths, credentials) belong in `local.env`
+or outside the repo.
 
 ## Credits
 

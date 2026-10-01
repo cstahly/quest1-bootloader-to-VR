@@ -1,0 +1,4 @@
+#!/bin/sh
+# Blocks commits that add personal data. Enable once per clone:
+#   git config core.hooksPath .githooks
+exec "$(git rev-parse --show-toplevel)/tools/check-pii.sh" --staged
