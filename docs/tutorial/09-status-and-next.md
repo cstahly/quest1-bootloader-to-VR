@@ -1,6 +1,6 @@
 # Current status, work in progress and TODO next
 
-Checkpoint: 2026-09-30. This page supersedes older status statements in chronological
+Checkpoint: 2026-10-01. This page supersedes older status statements in chronological
 logs. Evidence is from one owner's Quest 1; a fresh-owner end-to-end tutorial run has
 **not** been completed. No claim of a finished consumer OS or 6DoF runtime.
 
@@ -13,49 +13,50 @@ logs. Evidence is from one owner's Quest 1; a fresh-owner end-to-end tutorial ru
 | VR scene | Direct framebuffer, corrected stock lens mesh, accepted orientation motion | CPU rendering, diagnostic scene |
 | Recovery | Trigger-renewable five-minute guard and HUD, independent hardware watchdog | Expiry returns to fastboot |
 | Autostart | Cold-boot Wi-Fi and scene verified | Slot retry accounting/charger mode unfinished |
-| Cameras | All four monochrome streams and world-space panels | Later camera startup inconsistency |
+| Cameras | All four monochrome streams and world-space panels | Stale OpenRC cache fixed; normal reboot verified |
 | Drawing | Wearer-confirmed head-aimed3D ink, saved strokes | Not tracked-controller drawing |
 | Passthrough | Real composite/effects implemented | Stitching rejected; not accepted stereo |
 
-## Current in progress
+## Final checkpoint — 2026-10-01
 
-- **Physical movement tracking:** recorded Wi-Fi camera/IMU replays, rectification,
-  correspondence diagnostics and initialization analysis. The 60-second marked capture
-  is already saved; do not repeat solely because an older note asks for readiness.
-  Startup drift remains unresolved; no live positional pose deployed.
-- **Native Basalt:** ARM musl library/replay built; 3-frame real-data replay passes in
-  an emulated buildroot. Headset dependency staging, performance and integration remain.
-- **Passthrough floor panel:** requested to replace the oversized composite; source
-  exists, final wearer acceptance still needed.
-- **Tutorial audit:** corrected missing VR/camera/control work and unsupported claims.
-  Clean-machine reproduction is still pending.
+Work stopped at the owner's request. Headset verified in fastboot/USB Update Mode
+(serial `<SERIAL>`), not powered off. No experimental firmware or bootloader
+writes. The installed scene remains the orientation-only fallback; prediction is
+disabled. Latest camera/Monado experiments were RAM-only and baseline services were
+restored. No new wearer test is pending.
 
-Tracking experimentation is paused while this documentation audit is performed.
-The accepted scene remains the baseline. A separate clarification about whether the
-headset was moved again near the end of the marked clip remains unresolved; do not
-attribute all endpoint displacement to estimator drift without that history.
+- Four-core tracking enabled substantial walking in full light, but remained laggy
+  and unreliable in low light. The wearer rejected velocity prediction as worse.
+- Experimental r8 fixes prediction geometry and HOLD query behavior; 22 package
+  tests passed, but the package is not installed or wearer-accepted.
+- Saved-input replays are now deterministic. Lower FAST thresholds, guessed timing
+  offsets and zero-bias IMU propagation did not establish improvements.
+- Frozen camera metadata while HAL frame counters advance makes exposure readback
+  unreliable. Earlier claims of physical bank-command failure are unproven.
+- The exact stock CPU cache-invalidation path is traced. An opt-in implementation
+  builds and passes host tests, but **has not run on the headset**. This is the next
+  bounded experiment, not a demonstrated tracking fix.
+- Display now uses one composite wall left of the cube. Duplicate standing panels
+  and floor panel were removed. Stitching still needs correction; this is not
+  accepted stereo passthrough.
+
+Details and historical evidence: [tracking log](../basalt-positional-tracking.md),
+[camera log](../CAMERA-ROADMAP.md). Private assets: [location and SHA256 inventory](../assets-inventory.md).
 
 ## TODO next — in order
 
-1. Diagnose stationary startup drift using existing recordings. Validate units/axes,
-   gravity/bias initialization, feature support, extrinsics and clock alignment. Keep
-   original captures and avoid declaring a fix from reduced stationary drift alone.
-2. Establish measured translation scale, return error and stationary stability across
-   recordings. Report initialization exclusions and reference-pose choice explicitly.
-3. Audit/bundle ARM dependencies privately, then run a bounded native trial alongside
-   the accepted scene. Integrate with Monado only with nonblocking sensor queues,
-   coordinate conversion and tracking-loss handling.
-4. Validate the small floor composite; repair stitching/parallax and retain the four
-   separate camera stations. Work on controller aiming and physical controls.
-5. Extend camera-data drawing/effects: optical flow, particles, silhouettes and trails.
-6. Integrate optics and rendering into a real native OpenXR compositor/VR shell.
-   Investigate isolated KGSL GL further if useful; hardware acceleration is unverified.
-7. Finish boot-success/slot retry handling, charger-only mode and camera autostart
-   reliability. Preserve both recovery mechanisms during changes.
-8. Produce a complete clean-build/package/install workflow: boot finalizer, owner
-   asset extraction manifest, exact dependency versions, guard/scene/camera packages,
-   rollback and verification. Test it from an independent checkout/device.
-9. Audio and other unvalidated peripherals need separate bring-up and acceptance.
+1. Run the prepared 90-second RAM-only CPU-invalidation test using original exposure
+   settings. Compare all-frame metadata counters and image freshness; retain both
+   recovery mechanisms and restore baseline. Do not tune exposure against stale data.
+2. If coherency is established, reassess scene/controller-bank selection and exposure
+   acknowledgments. Test normal and low light using existing recordings first.
+3. Reduce positional latency and tracking loss, then validate translation scale,
+   return error and stationary stability. Prediction stays disabled until useful.
+4. Correct composite geometry; add controller aiming and camera-driven drawing/effects.
+5. Integrate optics/rendering into a native OpenXR compositor and VR shell. Hardware
+   acceleration remains unverified; no desktop or joystick locomotion target.
+6. Finish boot-success/slot retry handling and charger-only shutdown, package the full
+   reproducible install, and validate audio/remaining peripherals separately.
 
 ## Finish criteria for a device session
 
@@ -74,7 +75,7 @@ a charger reboot; an unplugged Wi-Fi shutdown is needed to leave this device off
   inputs. Calibration is not all located in a stock system image.
 - Guard, scene and camera runtime sources exist, but are not all installed by the
   base device package. Copying `packages/*` does not reproduce the entire headset.
-- Never apply the whole Basalt patch directory:0002 is an unsuccessful experiment.
+- Never apply the whole Basalt patch directory: 0002, 0004 and 0007 are unsuccessful or unaccepted experiments; 0005/0006 have supporting tests.
 
 [Boot](../boot-bringup.md) · [Wi-Fi](../adsp-wifi.md) ·
 [Autostart](../TEST-SCENE-AUTOSTART.md) · [Cameras](../CAMERA-ROADMAP.md) ·

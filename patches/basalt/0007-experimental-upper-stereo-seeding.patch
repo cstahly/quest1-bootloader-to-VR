@@ -1,0 +1,95 @@
+diff --git a/include/basalt/optical_flow/frame_to_frame_optical_flow.h b/include/basalt/optical_flow/frame_to_frame_optical_flow.h
+index 87675bd..f79ade7 100644
+--- a/include/basalt/optical_flow/frame_to_frame_optical_flow.h
++++ b/include/basalt/optical_flow/frame_to_frame_optical_flow.h
+@@ -36,6 +36,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ #pragma once
+ 
+ #include <memory>
++#include <cstdlib>
+ 
+ #include <sophus/se2.hpp>
+ #include "basalt/imu/imu_types.h"
+@@ -634,6 +635,11 @@ class FrameToFrameOpticalFlow final : public OpticalFlowTyped<Scalar, Pattern> {
+     return masks;
+   }
+ 
++  bool useUpperStereo() const {
++    const char* value = std::getenv("QUEST_VIO_UPPER_STEREO");
++    return getNumCams() == 4 && value && std::string(value) == "1";
++  }
++
+   void addPoints() {
+     Masks& ms0 = transforms->input_images->masks.at(0);
+     Keypoints kpts0 = addPointsForCamera(0);
+@@ -652,6 +658,20 @@ class FrameToFrameOpticalFlow final : public OpticalFlowTyped<Scalar, Pattern> {
+       trackPoints(pyr0, pyri, kpts0, kpts, mgs, ms0, ms, T_c0_ci, 0, i);
+       addKeypoints(i, kpts);
+     }
++    // Opt-in four-camera experiment: logical 2/3 are the upper stereo pair.
++    // Fill only empty detection cells; do not overwrite existing shared tracks.
++    if (useUpperStereo()) {
++      Keypoints seeds = addPointsForCamera(2), matches, guesses;
++      SE3 T_c2_c3 = calib.T_i_c[2].inverse() * calib.T_i_c[3];
++      trackPoints(pyramid->at(2), pyramid->at(3), seeds, matches, guesses,
++                  transforms->input_images->masks.at(2), transforms->input_images->masks.at(3), T_c2_c3, 2, 3);
++      for (auto it = matches.begin(); it != matches.end();) {
++        if (getCellCount(it->second.translation(), 3) >= config.optical_flow_detection_num_points_cell)
++          it = matches.erase(it);
++        else ++it;
++      }
++      addKeypoints(3, matches);
++    }
+     transforms->input_images->addTime("frontend_matching_ended");
+ 
+     for (size_t i = 1; i < getNumCams(); i++) {
+@@ -665,16 +685,23 @@ class FrameToFrameOpticalFlow final : public OpticalFlowTyped<Scalar, Pattern> {
+     transforms->input_images->addTime("frontend_detection_cami_ended");
+   }
+ 
+-  void filterPointsForCam(int cam_id) {
++  void filterPointsForCam(int cam_id, int reference = 0) {
++    Matrix4 essential = E[cam_id];
++    if (reference != 0) {
++      Eigen::Matrix4d ed;
++      SE3 relative = calib.T_i_c[reference].inverse() * calib.T_i_c[cam_id];
++      computeEssential(relative.template cast<double>(), ed);
++      essential = ed.template cast<Scalar>();
++    }
+     std::set<KeypointId> kp_to_remove;
+ 
+     std::vector<KeypointId> kpids;
+     Eigen::aligned_vector<Eigen::Vector2f> proj0, proj1;
+ 
+     for (const auto& [kpid, affine] : transforms->keypoints.at(cam_id)) {
+-      auto it = transforms->keypoints.at(0).find(kpid);
++      auto it = transforms->keypoints.at(reference).find(kpid);
+ 
+-      if (it != transforms->keypoints.at(0).end()) {
++      if (it != transforms->keypoints.at(reference).end()) {
+         proj0.emplace_back(it->second.translation());
+         proj1.emplace_back(affine.translation());
+         kpids.emplace_back(kpid);
+@@ -684,12 +711,12 @@ class FrameToFrameOpticalFlow final : public OpticalFlowTyped<Scalar, Pattern> {
+     Eigen::aligned_vector<Eigen::Vector4f> p3d0, p3d1;
+     std::vector<bool> p3d0_success, p3d1_success;
+ 
+-    calib.intrinsics[0].unproject(proj0, p3d0, p3d0_success);
++    calib.intrinsics[reference].unproject(proj0, p3d0, p3d0_success);
+     calib.intrinsics[cam_id].unproject(proj1, p3d1, p3d1_success);
+ 
+     for (size_t i = 0; i < p3d0_success.size(); i++) {
+       if (p3d0_success[i] && p3d1_success[i]) {
+-        const double epipolar_error = std::abs(p3d0[i].transpose() * E[cam_id] * p3d1[i]);
++        const double epipolar_error = std::abs(p3d0[i].transpose() * essential * p3d1[i]);
+ 
+         if (epipolar_error > config.optical_flow_epipolar_error) { kp_to_remove.emplace(kpids[i]); }
+       } else {
+@@ -702,6 +729,7 @@ class FrameToFrameOpticalFlow final : public OpticalFlowTyped<Scalar, Pattern> {
+ 
+   void filterPoints() {
+     for (size_t i = 1; i < getNumCams(); i++) { filterPointsForCam(i); }
++    if (useUpperStereo()) filterPointsForCam(3, 2);
+   }
+ 
+   void updateCellCounts(size_t cam_id) {

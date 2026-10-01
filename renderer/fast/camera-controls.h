@@ -4,7 +4,19 @@
 #define QUEST_CAMERA_CONTROLS_H
 #include <dirent.h>
 #include <linux/input.h>
-static struct {int fd[2],initialized,middle,peek,mode,draw;double scanned;float distance;} camera_controls={.fd={-1,-1},.distance=2.5f};
+static struct {int fd[2],initialized,middle,peek,mode,draw,recenter,middle_fired;double scanned,middle_since;float distance;} camera_controls={.fd={-1,-1},.distance=2.5f};
+/* Short stick click cycles effects; a one-second hold resets the scene once.
+ * Ignore a button already held when the reader starts until it is released. */
+static void camera_controls_middle(double now,int middle){
+ camera_controls.recenter=0;
+ if(!camera_controls.initialized){camera_controls.initialized=1;camera_controls.middle_fired=middle;}
+ else if(middle&&!camera_controls.middle){camera_controls.middle_since=now;camera_controls.middle_fired=0;}
+ if(middle&&!camera_controls.middle_fired&&now-camera_controls.middle_since>=1){
+  camera_controls.recenter=1;camera_controls.middle_fired=1;
+ }
+ if(!middle&&camera_controls.middle&&!camera_controls.middle_fired)camera_controls.mode=(camera_controls.mode+1)%3;
+ camera_controls.middle=middle;
+}
 static void camera_controls_poll(double now){
  if(now-camera_controls.scanned>1){
   camera_controls.scanned=now;
@@ -32,8 +44,7 @@ static void camera_controls_poll(double now){
   peek|=!!(keys[BTN_RIGHT/8]&(1U<<(BTN_RIGHT%8)));
   middle|=!!(keys[BTN_MIDDLE/8]&(1U<<(BTN_MIDDLE%8)));
  }
- if(camera_controls.initialized&&middle&&!camera_controls.middle)camera_controls.mode=(camera_controls.mode+1)%3;
- camera_controls.initialized=1;camera_controls.middle=middle;camera_controls.peek=peek;camera_controls.draw=draw;
+ camera_controls_middle(now,middle);camera_controls.peek=peek;camera_controls.draw=draw;
  camera_controls.distance=fminf(8,fmaxf(.4f,camera_controls.distance));
 }
 #endif

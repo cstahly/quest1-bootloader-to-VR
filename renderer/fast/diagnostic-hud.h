@@ -95,7 +95,7 @@ static int hud_recovery(double now,double *remaining,unsigned *resets) {
 }
 #include "camera-panel.h"
 #include "spatial-ink.h"
-static void hud_draw(double now,float turn) {
+static void hud_draw(double now,float turn,int position_tracked) {
  if(!fb.pixels)return;
  if(now-hud.updated>=.5){
   hud.updated=now;hud.count=0;
@@ -112,8 +112,12 @@ static void hud_draw(double now,float turn) {
    snprintf(controls,sizeof(controls),"INK %u/2048  DEPTH %.1fM  %s",ink.count,camera_controls.distance,camera_controls.mode==1?"EDGES":camera_controls.mode==2?"TRAILS":"CAMERA");
    hud_text(eye,.23f,controls,0xff88dd);
    hud_text(eye,.153f,"A/X DRAW  STICK DEPTH  CLICK FX",0xff88dd);
-   hud_text(eye,.076f,"FLOOR CAMERA / PHYSICAL TRACKING TBD",0xffdd88);
-   
+   char position[80];
+   snprintf(position,sizeof(position),"POS %s X%.2f Y%.2f Z%.2f M",position_tracked?"LIVE":positional_mode?"HOLD":"OFF",scene_position.x,scene_position.y,scene_position.z);
+   hud_text(eye,.076f,position,position_tracked?0x55ffaa:0xffdd88);
+   const char *reset_text=recenter_pending?(position_tracked?"LOOK FORWARD TO RESET":"RESET WAITING FOR LIVE"):
+       now<recenter_feedback_until?"START HERE SET":"HOLD STICK 1S START HERE";
+   hud_text(eye,-.001f,reset_text,0x55ddff);
    for(int row=0;row<6;row++)hud_text(eye,.98f-row*.077f,rows[row],row==4?(!guarded||remaining<30?0xff9955:0x55ffaa):0xaadfff);
    /* Last 90 loop intervals, 0..40 ms. Reference line is 13.9 ms, not a claim
     * about panel rate; spikes above 25 ms are orange. */

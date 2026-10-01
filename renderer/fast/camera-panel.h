@@ -1,5 +1,5 @@
-/* Four world-anchored camera stations, with accepted per-channel lens warp.
- * Raw sensor views, not calibrated stereo passthrough.
+/* One world-anchored composite wall, with accepted per-channel lens warp.
+ * Chosen-depth mono composite, not calibrated stereo passthrough.
  */
 #ifndef QUEST_CAMERA_PANEL_H
 #define QUEST_CAMERA_PANEL_H
@@ -11,7 +11,6 @@
 #endif
 static struct {
  struct quest_camera_feed feed;
- unsigned char display[4][QUEST_CAMERA_PIXELS],previous[4][QUEST_CAMERA_PIXELS],trail[4][QUEST_CAMERA_PIXELS];
  unsigned previous_frames,last_publication;
  double checked,rate_start,fps;
  int seen,valid;
@@ -41,20 +40,6 @@ static void camera_panel_read(double now){
    camera_panel.fps=next->publication>=camera_panel.previous_frames?(next->publication-camera_panel.previous_frames)/(now-camera_panel.rate_start):0;
    camera_panel.rate_start=now;camera_panel.previous_frames=next->publication;
   }
-  unsigned char tone[256];
-  for(unsigned v=0;v<256;v++)tone[v]=(unsigned char)lroundf(powf(fmaxf(0,(v-4.f)/251.f),1.f/2.2f)*255);
-  for(unsigned cam=0;cam<4;cam++)for(unsigned i=0;i<QUEST_CAMERA_PIXELS;i++){
-   unsigned value=next->pixels[cam][i];
-   unsigned motion=(unsigned)abs((int)value-camera_panel.previous[cam][i])*10;
-   unsigned trail=camera_panel.trail[cam][i]*235U/256;if(motion>trail)trail=motion;if(trail>255)trail=255;
-   camera_panel.trail[cam][i]=(unsigned char)trail;camera_panel.previous[cam][i]=(unsigned char)value;
-   unsigned display=tone[value];
-   if(camera_controls.mode==1){
-    unsigned left=i%320?next->pixels[cam][i-1]:value,up=i>=320?next->pixels[cam][i-320]:value;
-    display=4U*(abs((int)value-(int)left)+abs((int)value-(int)up));if(display>255)display=255;
-   } else if(camera_controls.mode==2){display=display/4+trail;if(display>255)display=255;}
-   camera_panel.display[cam][i]=(unsigned char)display;
-  }
 
  }
  free(next);
@@ -62,12 +47,13 @@ static void camera_panel_read(double now){
 #include "camera-peek.h"
 /* Small tessellated planes retain the stock per-channel lens distortion.
  * Rasterize at 2x2 pixels for this software prototype; texture remains raw mono.
- * Four stations sit on a 3m arc left of the cube, in the same 3DoF world. */
+ * One composite wall sits 3m away, to the left of the cube. */
 struct camera_vertex {float x,y,u,v,iz;int valid;};
 static float camera_edge(struct camera_vertex a,struct camera_vertex b,float x,float y){
  return (x-a.x)*(b.y-a.y)-(y-a.y)*(b.x-a.x);
 }
 static void camera_triangle(struct camera_vertex a,struct camera_vertex b,struct camera_vertex c,int eye,int channel,int cam){
+ (void)cam;
  if(!a.valid||!b.valid||!c.valid)return;
  float area=camera_edge(a,b,c.x,c.y);if(fabsf(area)<.01f)return;
  int minx=(int)floorf(fminf(a.x,fminf(b.x,c.x))/2)*2;
@@ -96,7 +82,7 @@ static void camera_triangle(struct camera_vertex a,struct camera_vertex b,struct
    if(u>319)u=319;
    if(v<0)v=0;
    if(v>239)v=239;
-   unsigned value=(cam==4?(camera_peek.valid?camera_peek.pixels[v*320+u]:24):(camera_panel.valid?camera_panel.display[cam][v*320+u]:24))<<shift;
+   unsigned value=(camera_peek.valid?camera_peek.pixels[v*320+u]:24)<<shift;
    /* Coordinates are even and clipped to each eye: all four stores are valid. */
    unsigned *out=&fb.pixels[(1599-y)*fb.stride+2879-x];
    out[0]=(out[0]&~mask)|value;out[-1]=(out[-1]&~mask)|value;
@@ -107,8 +93,8 @@ static void camera_triangle(struct camera_vertex a,struct camera_vertex b,struct
 
 }
 static XrVector3f camera_world_point(int cam,float u,float v){
- if(cam==4)return (XrVector3f){(u-.5f)*1.5f,-1.48f,-2.3f+v*1.1f};
- float angle=(-35.f-32.f*cam)*.01745329252f;
+ (void)cam;
+ float angle=-42.f*.01745329252f;
  return (XrVector3f){3*sinf(angle)+(u-.5f)*1.45f*cosf(angle),(.5f-v)*1.0875f,-3*cosf(angle)+(u-.5f)*1.45f*sinf(angle)};
 }
 struct camera_eye_job {XrQuaternionf rotation;int eye;long long geometry,raster;};
@@ -116,7 +102,7 @@ static void *camera_panel_eye(void *arg){
  struct camera_eye_job *job=arg;XrQuaternionf rotation=job->rotation;int eye=job->eye;
  long long geometry=0,raster=0;
  project_clip_fast=1;
- for(int cam=0;cam<(camera_peek.map?5:4);cam++){
+ for(int cam=4;cam<5;cam++){
   for(int channel=0;channel<3;channel++){
    long long vertex_start=now_ns();
    struct camera_vertex vertices[9][13];
@@ -134,21 +120,12 @@ static void *camera_panel_eye(void *arg){
    }
    raster+=now_ns()-vertex_done;
   }
-  line_color=camera_panel.valid?0xffdd88:0xff4444;
+  line_color=camera_peek.valid?0xffdd88:0xff4444;
   for(int side=0;side<4;side++){
    const float uv[4][2]={{0,0},{1,0},{1,1},{0,1}};
    line(NULL,0,0,rotation,eye,1440,1600,camera_world_point(cam,uv[side][0],uv[side][1]),camera_world_point(cam,uv[(side+1)%4][0],uv[(side+1)%4][1]));
   }
-  if(cam==4)continue;
-  /* Two legs ground each panel; camera number is one to four top-edge ticks. */
-  for(int leg=0;leg<2;leg++){
-   XrVector3f a=camera_world_point(cam,leg?.85f:.15f,1),b=a;b.y=-1.5f;
-   line(NULL,0,0,rotation,eye,1440,1600,a,b);
-  }
-  for(int tick=0;tick<=cam;tick++){
-   XrVector3f a=camera_world_point(cam,.42f+tick*.05f,0),b=a;b.y+=.09f;
-   line(NULL,0,0,rotation,eye,1440,1600,a,b);
-  }
+
  }
  project_clip_fast=0;job->geometry=geometry;job->raster=raster;return NULL;
 }

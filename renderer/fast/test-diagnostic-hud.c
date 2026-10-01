@@ -10,6 +10,31 @@
 #include <assert.h>
 int main(int argc,char **argv) {
  assert(argc==3);
+ /* Short click remains FX; long hold emits exactly one reset and no FX. */
+ camera_controls_middle(10,0);camera_controls_middle(11,1);
+ camera_controls_middle(11.5,0);assert(camera_controls.mode==1&&!camera_controls.recenter);
+ camera_controls_middle(12,1);camera_controls_middle(13,1);assert(camera_controls.recenter);
+ camera_controls_middle(14,1);assert(!camera_controls.recenter);
+ camera_controls_middle(14.1,0);assert(camera_controls.mode==1);
+ XrQuaternionf test_origin={0,0,0,1},forward={0,0,0,1};
+ XrVector3f test_position_origin={0,0,0},here={1,2,3};
+ positional_mode=1;
+ assert(!recenter_view(forward,here,1,0,&test_origin,&test_position_origin));
+ assert(test_position_origin.x==0);
+ assert(recenter_view(forward,here,1,1,&test_origin,&test_position_origin));
+ XrVector3f reset_position=rotate(conjugate(test_origin),subtract(here,test_position_origin));
+ assert(fabsf(reset_position.x)+fabsf(reset_position.y)+fabsf(reset_position.z)<1e-6f);
+ reset_position=rotate(conjugate(test_origin),subtract((XrVector3f){1.5,2,3},test_position_origin));
+ assert(fabsf(reset_position.x-.5f)<1e-6f);
+ XrQuaternionf tilted={sinf(.2f),0,0,cosf(.2f)};
+ assert(recenter_view(tilted,here,1,1,&test_origin,&test_position_origin));
+ assert(test_origin.x==0&&test_origin.z==0); /* Gravity stays up. */
+ positional_mode=0;camera_controls.mode=0;
+ tracking_reset_path="test-tracking-reset";
+ assert(access(tracking_reset_path,F_OK)!=0);
+ assert(tracking_reset_request());assert(tracking_reset_request());
+ assert(access(tracking_reset_path,F_OK)==0);assert(unlink(tracking_reset_path)==0);
+ tracking_reset_path=NULL;
  assert(quest_lens_load(&lens,argv[1]));quest_lens_prepare_fast(&lens);
  fb.stride=2880;fb.bytes=2880*1600*4;fb.pixels=calloc(1,fb.bytes);assert(fb.pixels);
  hud.fps=72;hud.draw=8.3;hud.wait=5.6;
@@ -21,7 +46,7 @@ int main(int argc,char **argv) {
  double remaining;unsigned resets;
  assert(hud_recovery(100,&remaining,&resets)&&resets==2&&remaining==300);
  assert(!hud_recovery(103,&remaining,&resets)); /* Stale status must still fail. */
- hud_draw(100,32);
+ hud_draw(100,32,0);
  assert(unlink(HUD_RECOVERY_STATUS_PATH)==0);
  assert(hud.count>1000&&hud.count<HUD_PIXELS);
  unsigned left=0,right=0;
@@ -35,28 +60,9 @@ int main(int argc,char **argv) {
  testfeed->magic=QUEST_CAMERA_MAGIC;testfeed->version=1;testfeed->width=320;testfeed->height=240;testfeed->cameras=4;testfeed->publication=1;
  for(int i=0;i<4;i++){testfeed->timestamp_ns[i]=99950000000ULL;testfeed->frames[i]=10;memset(testfeed->pixels[i],40+i*60,QUEST_CAMERA_PIXELS);}
  FILE *feedfile=fopen(CAMERA_FEED_PATH,"wb");assert(feedfile);assert(fwrite(testfeed,1,sizeof(*testfeed),feedfile)==sizeof(*testfeed));assert(!fclose(feedfile));
- XrQuaternionf facing_left={0,-sinf(.65f),0,cosf(.65f)};
+ XrQuaternionf facing_left={0,sinf(-42.f*.01745329252f/2),0,cosf(-42.f*.01745329252f/2)};
  camera_panel_draw(100,facing_left);assert(camera_panel.valid&&camera_panel.seen);
- /* Every station must be visible in both eyes when looking toward its center.
-  * Count its actual grey texture, not pre-existing HUD/wire pixels. */
- for(int cam=0;cam<4;cam++){
-  float yaw=(-35.f-32.f*cam)*.01745329252f;
-  XrQuaternionf r={0,sinf(yaw/2),0,cosf(yaw/2)};
-  memset(fb.pixels,0,fb.bytes);camera_panel_draw(100,r);
-  unsigned eyes[2]={0},tone=camera_panel.display[cam][0];
-  unsigned expected=tone*0x010101;
-  for(unsigned i=0;i<2880*1600;i++)if(fb.pixels[i]==expected)eyes[i%2880<1440]++;
-  assert(eyes[0]>1000&&eyes[1]>1000);
- }
- memset(fb.pixels,0,fb.bytes);camera_panel_draw(100,facing_left);hud_draw(100,32);
- FILE *out=fopen(argv[2],"wb");assert(out);fprintf(out,"P6\n2880 1600\n255\n");
- /* Undo panel rotation for a readable optical-raster inspection artifact. */
- for(int y=0;y<1600;y++)for(int x=0;x<2880;x++){
-  unsigned c=fb.pixels[(1599-y)*2880+2879-x];unsigned char rgb[]={c>>16,c>>8,c};
-  assert(fwrite(rgb,1,3,out)==3);
- }
- assert(!fclose(out));printf("HUD: %u cached pixels, both eyes, bounds/capacity/font checks passed\n",hud.count);
- /* Floor composite source selection and real binocular floor geometry. */
+ /* Composite source selection and binocular wall geometry. */
  unsigned ph[4]={0x51464c52,1,320,240};size_t map_count=320*240;
  unsigned *peek_map=calloc(map_count,sizeof(unsigned));assert(peek_map);
  peek_map[0]=UINT_MAX;peek_map[1]=3*QUEST_CAMERA_PIXELS;
@@ -65,11 +71,23 @@ int main(int argc,char **argv) {
  camera_floor_update();assert(camera_peek.valid&&camera_peek.pixels[0]==0);
  assert(camera_peek.pixels[1]>camera_peek.pixels[2]);
  memset(fb.pixels,0,fb.bytes);
- XrQuaternionf down={sinf(.35f),0,0,cosf(.35f)};
- camera_panel_draw(100,down);
+ camera_panel_draw(100,facing_left);
  unsigned floor_eyes[2]={0},shade=camera_peek.pixels[2]*0x010101;
  for(unsigned i=0;i<2880*1600;i++)if(fb.pixels[i]==shade)floor_eyes[i%2880<1440]++;
  assert(floor_eyes[0]>1000&&floor_eyes[1]>1000);
+ XrVector3f wall_top=camera_world_point(4,.5f,0),wall_bottom=camera_world_point(4,.5f,1);
+ assert(wall_top.x<-.5f&&wall_top.y>wall_bottom.y);
+ assert(fabsf(wall_top.z-wall_bottom.z)<1e-6f); /* Upright, not floor. */
+ camera_controls.mode=1;camera_floor_update();assert(camera_peek.pixels[2]==0);
+ camera_controls.mode=0;camera_floor_update();assert(camera_peek.pixels[2]>0);
+ memset(fb.pixels,0,fb.bytes);camera_panel_draw(100,facing_left);hud_draw(100,32,0);
+ FILE *out=fopen(argv[2],"wb");assert(out);fprintf(out,"P6\n2880 1600\n255\n");
+ /* Undo panel rotation for a readable optical-raster inspection artifact. */
+ for(int y=0;y<1600;y++)for(int x=0;x<2880;x++){
+  unsigned c=fb.pixels[(1599-y)*2880+2879-x];unsigned char rgb[]={c>>16,c>>8,c};
+  assert(fwrite(rgb,1,3,out)==3);
+ }
+ assert(!fclose(out));printf("HUD: %u cached pixels, both eyes, bounds/capacity/font checks passed\n",hud.count);
  camera_panel.valid=0;camera_floor_update();assert(!camera_peek.valid);
  camera_panel.valid=1;assert(!unlink(CAMERA_PEEK_MAP_PATH));
  free(camera_peek.map);free(camera_peek.pixels);camera_peek.map=NULL;camera_peek.pixels=NULL;

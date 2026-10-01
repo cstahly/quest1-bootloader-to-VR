@@ -7,6 +7,7 @@
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
 #include <limits.h>
+#include <errno.h>
 #include "quest-lens-mesh.h"
 #include "framebuffer.h"
 #include <math.h>
@@ -23,6 +24,10 @@ static _Thread_local unsigned long line_color=0xffffff;
 static _Thread_local int project_clip_fast;
 static struct framebuffer fb;
 static XrVector3f scene_position;
+static int positional_mode;
+static int recenter_pending;
+static double recenter_feedback_until;
+static const char *tracking_reset_path;
 static XrVector3f subtract(XrVector3f a,XrVector3f b){return (XrVector3f){a.x-b.x,a.y-b.y,a.z-b.z};}
 static XrVector3f add(XrVector3f a,XrVector3f b){return (XrVector3f){a.x+b.x,a.y+b.y,a.z+b.z};}
 static void stop(int sig) { (void)sig; running=0; }
@@ -41,6 +46,21 @@ static int recenter_heading(XrQuaternionf q,XrQuaternionf *origin) {
  if(f.x*f.x+f.z*f.z<0.04f)return 0; /* Yaw is undefined near vertical. */
  float yaw=atan2f(-f.x,-f.z);
  *origin=(XrQuaternionf){0,sinf(yaw/2),0,cosf(yaw/2)};return 1;
+}
+/* Optional trial-owned request file; repeated holds coalesce while pending. */
+static int tracking_reset_request(void){
+ if(!tracking_reset_path)return 1;
+ int fd=open(tracking_reset_path,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0600);
+ if(fd<0){if(errno==EEXIST)return 1;perror("tracking reset request");return 0;}
+ close(fd);puts("START HERE: positional estimator restart requested");fflush(stdout);return 1;
+}
+/* Set the visible scene origin, preserving gravity and estimator state. */
+static int recenter_view(XrQuaternionf q,XrVector3f position,int valid,int tracked,
+                         XrQuaternionf *origin,XrVector3f *position_origin){
+ if(positional_mode&&(!valid||!tracked))return 0;
+ if(!recenter_heading(q,origin))return 0;
+ *position_origin=valid?position:(XrVector3f){0,0,0};
+ return 1;
 }
 static int project(XrVector3f p,int eye,int channel,int w,int h,int *x,int *y) {
  p.x-=(eye?0.03175f:-0.03175f);
@@ -73,6 +93,7 @@ static void line(Display*d,Drawable p,GC gc,XrQuaternionf q,int eye,int w,int h,
 }
 #include "diagnostic-hud.h"
 int main(int argc,char **argv) {
+ positional_mode=getenv("MONTEREY_VIO_POSE_FILE")!=NULL;
  char mesh_path[PATH_MAX];const char *override=getenv("MONTEREY_DISTORTION_MESH");
  if(override)snprintf(mesh_path,sizeof(mesh_path),"%s",override);
  else {const char *slash=strrchr(argv[0],'/');int length=slash?(int)(slash-argv[0]):1;
@@ -133,30 +154,45 @@ int main(int argc,char **argv) {
  if(!begun){fprintf(stderr,"Session did not become ready\n");return 3;}
  struct timespec settle={0,500000000};nanosleep(&settle,NULL);
  }
- XrQuaternionf origin={0,0,0,1};int frames=0;
+ tracking_reset_path=getenv("MONTEREY_TRACKING_RESET_REQUEST");
+ XrQuaternionf origin={0,0,0,1};XrVector3f position_origin={0,0,0};int frames=0;
  long long start=now_ns();
  while(running){
   long long frame_start=now_ns(), pose_end, draw_end, sync_end;
   static long long pose_ns=0, draw_ns=0, sync_ns=0;
   XrSpaceVelocity velocity={.type=XR_TYPE_SPACE_VELOCITY};
   XrQuaternionf q={0,0,0,1};
+  XrVector3f local_position={0,0,0};int position_valid=0,position_tracked=0;
   if(!stationary){
   struct timespec timestamp;clock_gettime(CLOCK_MONOTONIC,&timestamp);XrTime time;
   CHECK_XR(to_time(instance,&timestamp,&time));
   XrSpaceLocation location={.type=XR_TYPE_SPACE_LOCATION,.next=&velocity};
   CHECK_XR(xrLocateSpace(view,local,time,&location));
   if(!(location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT)){fprintf(stderr,"Tracking unavailable\n");break;}
+  if(location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT){
+   local_position=location.pose.position;
+   position_valid=isfinite(local_position.x)&&isfinite(local_position.y)&&isfinite(local_position.z);
+  }
+  position_tracked=!!(location.locationFlags & XR_SPACE_LOCATION_POSITION_TRACKED_BIT);
   q=location.pose.orientation;float norm=q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w;
   if(!isfinite(norm)||fabsf(norm-1)>0.05f){fprintf(stderr,"Invalid quaternion\n");break;}
   }
   if(frames==0)recenter_heading(q,&origin);
-  if(frames%10==0){printf("t=%.3f q=%.6f,%.6f,%.6f,%.6f gyro=%.4f,%.4f,%.4f\n",(now_ns()-start)/1e9,q.x,q.y,q.z,q.w,velocity.angularVelocity.x,velocity.angularVelocity.y,velocity.angularVelocity.z);fflush(stdout);}
+  double camera_now=now_ns()/1e9;
+  if(d||fb.pixels)camera_controls_poll(camera_now);
+  if(camera_controls.recenter&&tracking_reset_request())recenter_pending=1;
+  if(recenter_pending&&(!tracking_reset_path||access(tracking_reset_path,F_OK)!=0)&&recenter_view(q,local_position,position_valid,position_tracked,&origin,&position_origin)){
+   recenter_pending=0;recenter_feedback_until=camera_now+3;
+   puts("START HERE: position and heading recentered; gravity preserved");fflush(stdout);
+  }
+  if(position_valid)scene_position=rotate(conjugate(origin),subtract(local_position,position_origin));
+  if(pose_only||frames%10==0){printf("t=%.3f q=%.6f,%.6f,%.6f,%.6f gyro=%.4f,%.4f,%.4f pos=%.6f,%.6f,%.6f tracked=%d\n",(now_ns()-start)/1e9,q.x,q.y,q.z,q.w,velocity.angularVelocity.x,velocity.angularVelocity.y,velocity.angularVelocity.z,scene_position.x,scene_position.y,scene_position.z,position_tracked);fflush(stdout);}
   pose_end=now_ns();
   if(d || fb.pixels){
    XrQuaternionf camera=conjugate(mul(conjugate(origin),q));
    if(d){XSetFunction(d,gc,GXcopy);XSetForeground(d,gc,0);XFillRectangle(d,back,gc,0,0,width,height);XSetFunction(d,gc,GXor);}
    else memset(fb.pixels,0,fb.bytes);
-   double camera_now=now_ns()/1e9;camera_controls_poll(camera_now);camera_panel_read(camera_now);
+   camera_panel_read(camera_now);
    camera_floor_update();
    for(int eye=0;eye<2;eye++){
     XRectangle clip={(short)(eye*width/2),0,(unsigned short)(width/2),(unsigned short)height};
@@ -175,7 +211,7 @@ int main(int argc,char **argv) {
                    velocity.angularVelocity.z*velocity.angularVelocity.z)*57.29578f;
    camera_panel_draw(now_ns()/1e9,camera);
    ink_draw(now_ns()/1e9,camera);
-   hud_draw(now_ns()/1e9,turn);
+   hud_draw(now_ns()/1e9,turn,position_tracked);
    if(guarded_session){double remaining;unsigned resets;
     if(!hud_recovery(now_ns()/1e9,&remaining,&resets)||remaining<=0){running=0;break;}
    }
@@ -192,7 +228,7 @@ int main(int argc,char **argv) {
     if(e.type==KeyPress&&XLookupKeysym(&e.xkey,0)==XK_Escape)running=0;
     else if(e.type==ButtonPress || (e.type==KeyPress &&
             (XLookupKeysym(&e.xkey,0)==XK_r || XLookupKeysym(&e.xkey,0)==XK_space))){
-     if(recenter_heading(q,&origin)){puts("Heading recentered; gravity up preserved");fflush(stdout);}
+     recenter_pending=1;
     }
    }
   }

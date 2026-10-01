@@ -1,0 +1,36 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 3066894..d8ecf04 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -15,8 +15,12 @@ endif()
+ find_program(MOLD_PROGRAM mold)
+ if(MOLD_PROGRAM)
+   message(STATUS "Mold linker found: ${MOLD_PROGRAM}")
+-  set(CMAKE_EXE_LINKER_FLAGS "-fuse-ld=mold")
+-  set(CMAKE_SHARED_LINKER_FLAGS "-fuse-ld=mold")
++  if(NOT CMAKE_EXE_LINKER_FLAGS MATCHES "-fuse-ld=")
++    string(APPEND CMAKE_EXE_LINKER_FLAGS " -fuse-ld=mold")
++  endif()
++  if(NOT CMAKE_SHARED_LINKER_FLAGS MATCHES "-fuse-ld=")
++    string(APPEND CMAKE_SHARED_LINKER_FLAGS " -fuse-ld=mold")
++  endif()
+ else()
+   message(STATUS "Mold linker not found. Using default linker.")
+ endif()
+@@ -304,9 +308,13 @@ if(TBB_INTERFACE_VERSION LESS 11004)
+ endif()
+ 
+ # NOTE: not specifying version, since 2, 3 or 4 is fine
+-find_package(OpenCV QUIET COMPONENTS core imgproc calib3d highgui)
+-if(NOT OpenCV_FOUND)
+-  find_package(OpenCV REQUIRED COMPONENTS core imgproc calib geometry highgui)
++if(BASALT_BUILD_SHARED_LIBRARY_ONLY AND NOT BASALT_BUILD_VISUALIZATION)
++  find_package(OpenCV REQUIRED COMPONENTS core imgproc features2d)
++else()
++  find_package(OpenCV QUIET COMPONENTS core imgproc calib3d highgui)
++  if(NOT OpenCV_FOUND)
++    find_package(OpenCV REQUIRED COMPONENTS core imgproc calib geometry highgui)
++  endif()
+ endif()
+ message(STATUS "Found OpenCV ${OpenCV_VERSION} headers in: ${OpenCV_INCLUDE_DIRS}")
+ message(STATUS "Found OpenCV_LIBS: ${OpenCV_LIBS}")

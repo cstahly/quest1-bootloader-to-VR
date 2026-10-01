@@ -1,0 +1,19 @@
+diff --git a/src/utils/keypoints.cpp b/src/utils/keypoints.cpp
+index de56b0a..88c4217 100644
+--- a/src/utils/keypoints.cpp
++++ b/src/utils/keypoints.cpp
+@@ -155,6 +155,14 @@ void detectKeypointsWithCells(const basalt::Image<const uint16_t>& img_raw, Keyp
+     for (size_t y = y_start; y <= y_stop; y += PATCH_SIZE) {
+       if (cells((y - y_start) / PATCH_SIZE, (x - x_start) / PATCH_SIZE) >= num_points_cell) continue;
+ 
++      // A fully masked cell cannot contribute any accepted corner. Avoid
++      // allocating/converting it and repeating FAST at every threshold.
++      const bool fully_masked = std::any_of(masks.masks.begin(), masks.masks.end(),
++          [&](const Rect& mask) {
++            return mask.inBounds(x, y) && mask.inBounds(x + PATCH_SIZE - 1, y + PATCH_SIZE - 1);
++          });
++      if (fully_masked) continue;
++
+       const basalt::Image<const uint16_t> sub_img_raw = img_raw.SubImage(x, y, PATCH_SIZE, PATCH_SIZE);
+ 
+       cv::Mat subImg(PATCH_SIZE, PATCH_SIZE, CV_8U);

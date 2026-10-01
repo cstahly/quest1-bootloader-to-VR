@@ -1,0 +1,55 @@
+diff --git a/src/vi_estimator/sqrt_keypoint_vio.cpp b/src/vi_estimator/sqrt_keypoint_vio.cpp
+index 9d45fe1..67aa24f 100644
+--- a/src/vi_estimator/sqrt_keypoint_vio.cpp
++++ b/src/vi_estimator/sqrt_keypoint_vio.cpp
+@@ -506,9 +506,10 @@ bool SqrtKeypointVioEstimator<Scalar_>::measure(const OpticalFlowResult::Ptr& op
+ 
+         // triangulate
+         bool valid_kp = false;
++        Scalar best_parallax = 0;
++        Vec4 best_triangulated = Vec4::Zero();
+         const Scalar min_triang_distance2 = config.vio_min_triangulation_dist * config.vio_min_triangulation_dist;
+         for (const auto& kv_obs : kp_obs) {
+-          if (valid_kp) break;
+           TimeCamId tcido = kv_obs.first;
+ 
+           const Vec2 p0 = opt_flow_meas->keypoints.at(i).at(lm_id).translation().cast<Scalar>();
+@@ -532,18 +533,31 @@ bool SqrtKeypointVioEstimator<Scalar_>::measure(const OpticalFlowResult::Ptr& op
+           Vec4 p0_triangulated = triangulate(p0_3d.template head<3>(), p1_3d.template head<3>(), T_0_1);
+ 
+           if (p0_triangulated.array().isFinite().all() && p0_triangulated[3] > 0 && p0_triangulated[3] < 3.0) {
+-            Landmark<Scalar> lm_pos;
+-            lm_pos.host_kf_id = tcidl;
+-            lm_pos.direction = StereographicParam<Scalar>::project(p0_triangulated);
+-            lm_pos.inv_dist = p0_triangulated[3];
+-            lmdb.addLandmark(lm_id, lm_pos);
+-
+-            num_points_added++;
++            // Select by geometric conditioning, not camera iteration order.
++            // A positive inverse distance alone does not establish a good match.
++            Vec2 reproj0, reproj1;
++            const Vec4 point1 = T_0_1.inverse().matrix() * p0_triangulated;
++            if (!calib.intrinsics[i].project(p0_triangulated, reproj0) ||
++                !calib.intrinsics[tcido.cam_id].project(point1, reproj1)) continue;
++            const Scalar limit2 = Scalar(9);  // Experimental 3-pixel reprojection gate.
++            if ((reproj0 - p0).squaredNorm() > limit2 || (reproj1 - p1).squaredNorm() > limit2) continue;
++            const Vec3 ray0 = p0_3d.template head<3>().normalized();
++            const Vec3 ray1 = T_0_1.so3() * p1_3d.template head<3>().normalized();
++            const Scalar parallax = ray0.cross(ray1).squaredNorm();
++            if (parallax <= best_parallax) continue;
++            best_parallax = parallax;
++            best_triangulated = p0_triangulated;
+             valid_kp = true;
+           }
+         }
+ 
+         if (valid_kp) {
++          Landmark<Scalar> lm_pos;
++          lm_pos.host_kf_id = tcidl;
++          lm_pos.direction = StereographicParam<Scalar>::project(best_triangulated);
++          lm_pos.inv_dist = best_triangulated[3];
++          lmdb.addLandmark(lm_id, lm_pos);
++          num_points_added++;
+           for (const auto& kv_obs : kp_obs) { lmdb.addObservation(kv_obs.first, kv_obs.second); }
+         }
+       }

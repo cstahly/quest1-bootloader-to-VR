@@ -24,6 +24,7 @@ if rc-service oculus-desktop-trial status >/dev/null 2>&1; then
 fi
 if pgrep -x Xorg >/dev/null; then echo 'Display still owned by Xorg; refusing framebuffer access' >&2; exit 1; fi
 if [ "${1:-}" != --static ]; then
+ : > /tmp/monado-mesh-fb-service.log
  monado-service >/tmp/monado-mesh-fb-service.log 2>&1 </dev/null &
  service_pid=$!
  # Wait for real gravity initialization instead of assuming twelve seconds.

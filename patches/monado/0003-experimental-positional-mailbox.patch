@@ -1,0 +1,279 @@
+--- a/src/xrt/drivers/monterey/monterey_device.c
++++ b/src/xrt/drivers/monterey/monterey_device.c
+@@ -4,6 +4,7 @@
+ #include "monterey_interface.h"
+ #include "monterey_protocol.h"
+ #include "monterey_lens.h"
++#include "monterey_vio_io.h"
+ 
+ #include "math/m_api.h"
+ #include "math/m_imu_3dof.h"
+@@ -49,6 +50,10 @@
+ 	int command_fd;
+ 	bool imu_enabled;
+ 	struct os_thread_helper thread;
++	struct os_thread_helper vio_thread;
++	char *vio_path;
++ bool vio_predict;
++	struct mv_state vio;
+ 	struct os_mutex fusion_mutex;
+ 	struct m_imu_3dof fusion;
+ 	struct monterey_imu_calibration calibration;
+@@ -133,6 +138,7 @@
+ 	if (d->last_received_ns && now_ns-d->last_received_ns > U_TIME_1S_IN_NS/10) {
+ 		/* Do not integrate a new sample over a long sensor outage. */
+ 		memset(&d->calibration, 0, sizeof(d->calibration));
++		mv_deactivate(&d->vio, now_ns); d->vio.anchored = false;
+ 		d->sample_count = 0;
+ 		m_imu_3dof_close(&d->fusion);
+ 		m_imu_3dof_init(&d->fusion, M_IMU_3DOF_USE_GRAVITY_DUR_20MS);
+@@ -183,6 +189,34 @@
+ 	return NULL;
+ }
+ 
++/* File access is isolated from the high-rate orientation and pose callbacks. */
++static void *
++positional_thread(void *ptr)
++{
++ struct monterey_device *d = ptr;
++ os_thread_helper_lock(&d->vio_thread);
++ while (os_thread_helper_is_running_locked(&d->vio_thread)) {
++  os_thread_helper_unlock(&d->vio_thread);
++  struct mv_packet packet = {0};
++  bool present = mv_read_packet(d->vio_path, &packet);
++  os_mutex_lock(&d->fusion_mutex);
++  struct xrt_quat q = d->last_relation.pose.orientation;
++  struct xrt_vec3 w = d->last_relation.angular_velocity;
++  uint64_t now = os_monotonic_get_ns();
++  if (present && d->sample_count && now - d->last_update_ns < U_TIME_1S_IN_NS / 10) {
++   mv_update(&d->vio, packet, (struct mv_quat){q.x,q.y,q.z,q.w},
++             sqrt(w.x*w.x+w.y*w.y+w.z*w.z), now);
++  } else {
++   mv_deactivate(&d->vio, now); d->vio.anchored = false;
++  }
++  os_mutex_unlock(&d->fusion_mutex);
++  os_nanosleep(10 * U_TIME_1MS_IN_NS);
++  os_thread_helper_lock(&d->vio_thread);
++ }
++ os_thread_helper_unlock(&d->vio_thread);
++ return NULL;
++}
++
+ static xrt_result_t
+ monterey_get_tracked_pose(struct xrt_device *xdev,
+                           enum xrt_input_name name,
+@@ -207,6 +241,14 @@
+ 	} else {
+ 		*out_relation = d->last_relation;
+ 	}
++ if (d->vio_path && (out_relation->relation_flags & XRT_SPACE_RELATION_ORIENTATION_VALID_BIT)) {
++  uint64_t now = os_monotonic_get_ns();
++  struct mv_vec position = d->vio_predict ? mv_render_position(&d->vio, at_timestamp_ns, now) : d->vio.position;
++  out_relation->pose.position = (struct xrt_vec3){position.x,position.y,position.z};
++  if (d->vio.active && now >= d->vio.last_timestamp && now - d->vio.last_timestamp <= 150000000) {
++   out_relation->relation_flags |= XRT_SPACE_RELATION_POSITION_TRACKED_BIT;
++  }
++ }
+ 	os_mutex_unlock(&d->fusion_mutex);
+ 	return XRT_SUCCESS;
+ }
+@@ -216,6 +258,11 @@
+ {
+ 	struct monterey_device *d = monterey_device(xdev);
+ 	u_var_remove_root(d);
++ if (d->vio_thread.initialized) {
++  os_thread_helper_stop_and_wait(&d->vio_thread);
++  os_thread_helper_destroy(&d->vio_thread);
++ }
++ free(d->vio_path);
+ 	if (d->thread.initialized) {
+ 		os_thread_helper_stop_and_wait(&d->thread);
+ 	}
+@@ -357,6 +404,19 @@
+ 		MONTEREY_ERROR(d, "Failed to start sensor thread");
+ 		goto fail;
+ 	}
++ const char *vio_path = getenv("MONTEREY_VIO_POSE_FILE");
++ if (vio_path && vio_path[0] == '/') {
++  d->vio_path = strdup(vio_path);
++  const char *prediction = getenv("MONTEREY_VIO_PREDICT");
++  d->vio_predict = prediction && strcmp(prediction, "1") == 0;
++  if (!d->vio_path || os_thread_helper_init(&d->vio_thread) != 0 ||
++      os_thread_helper_start(&d->vio_thread, positional_thread, d) != 0) {
++   MONTEREY_ERROR(d, "Failed to start optional positional reader");
++   goto fail;
++  }
++  d->base.supported.position_tracking = true;
++  MONTEREY_WARN(d, "Experimental positional mailbox enabled: %s", vio_path);
++ }
+ 	MONTEREY_INFO(d, "Started at %.0f Hz after receiving valid HMD IMU data", refresh_rate);
+ 	return &d->base;
+ 
+--- /dev/null
++++ b/src/xrt/drivers/monterey/monterey_vio.h
+@@ -0,0 +1,120 @@
++/* Experimental positional adapter. No filesystem/sensor access in this helper.
++ * Keeps orientation owned by existing fusion. Positions are local and ephemeral;
++ * brief loss holds position and preserves alignment; long loss/restart re-anchors.
++ */
++#ifndef MONTEREY_VIO_H
++#define MONTEREY_VIO_H
++#include <math.h>
++#include <stdbool.h>
++#include <stdint.h>
++struct mv_vec { double x,y,z; };
++struct mv_quat { double x,y,z,w; };
++struct mv_packet {
++ uint64_t epoch,timestamp,published;
++ struct mv_vec position,head_offset,velocity;
++ bool velocity_valid;
++ struct mv_quat orientation;
++ unsigned ready;
++};
++struct mv_state {
++ bool active,anchored;
++ uint64_t epoch,last_timestamp;
++ struct mv_quat alignment,last_orientation;
++ struct mv_vec head_origin,position_origin,position,last_head,last_offset,velocity,prediction_offset,predicted_hold;
++ bool can_predict;
++};
++static inline struct mv_vec mv_add(struct mv_vec a,struct mv_vec b){return (struct mv_vec){a.x+b.x,a.y+b.y,a.z+b.z};}
++static inline struct mv_vec mv_sub(struct mv_vec a,struct mv_vec b){return (struct mv_vec){a.x-b.x,a.y-b.y,a.z-b.z};}
++static inline double mv_norm(struct mv_vec a){return sqrt(a.x*a.x+a.y*a.y+a.z*a.z);}
++static inline struct mv_quat mv_inverse(struct mv_quat q){return (struct mv_quat){-q.x,-q.y,-q.z,q.w};}
++static inline struct mv_quat mv_multiply(struct mv_quat a,struct mv_quat b){return (struct mv_quat){
++ a.w*b.x+a.x*b.w+a.y*b.z-a.z*b.y,a.w*b.y-a.x*b.z+a.y*b.w+a.z*b.x,
++ a.w*b.z+a.x*b.y-a.y*b.x+a.z*b.w,a.w*b.w-a.x*b.x-a.y*b.y-a.z*b.z};}
++static inline struct mv_vec mv_rotate(struct mv_quat q,struct mv_vec p){struct mv_quat r=mv_multiply(mv_multiply(q,(struct mv_quat){p.x,p.y,p.z,0}),mv_inverse(q));return (struct mv_vec){r.x,r.y,r.z};}
++static inline bool mv_finite(struct mv_vec p){return isfinite(p.x)&&isfinite(p.y)&&isfinite(p.z);}
++static inline bool mv_normalize(struct mv_quat *q){
++ double n=q->x*q->x+q->y*q->y+q->z*q->z+q->w*q->w;
++ if(!isfinite(n)||fabs(n-1)>0.05)return false;
++ n=sqrt(n);q->x/=n;q->y/=n;q->z/=n;q->w/=n;return true;
++}
++/* Endpoint velocity of the rotated lever arm. The offset chord divided by dt
++ * is an interval-average velocity and does not cancel instantaneous IMU velocity
++ * during rotation about a stationary head. Relative orientation gives world
++ * angular velocity (constant-rate approximation), crossed with the current arm.
++ */
++static inline struct mv_vec mv_lever_velocity(struct mv_quat previous,struct mv_quat current,struct mv_vec offset,double dt){
++ struct mv_quat delta=mv_multiply(current,mv_inverse(previous));
++ if(delta.w<0)delta=(struct mv_quat){-delta.x,-delta.y,-delta.z,-delta.w};
++ double n=sqrt(delta.x*delta.x+delta.y*delta.y+delta.z*delta.z);
++ double factor=n>1e-12?2*atan2(n,delta.w)/(n*dt):2/dt;
++ struct mv_vec w={delta.x*factor,delta.y*factor,delta.z*factor};
++ return (struct mv_vec){w.y*offset.z-w.z*offset.y,w.z*offset.x-w.x*offset.z,w.x*offset.y-w.y*offset.x};
++}
++/* Prediction coordinates are separate from the raw measurement path so disabling
++ * prediction retains its original alignment/reanchor behavior. */
++static inline struct mv_vec mv_predict(const struct mv_state *s,uint64_t target){
++ struct mv_vec out=mv_add(s->position,s->prediction_offset);
++ if(s->can_predict&&target>s->last_timestamp){
++  double horizon=fmin((target-s->last_timestamp)*1e-9,.1);
++  double speed=mv_norm(s->velocity);
++  if(speed>0)horizon=fmin(horizon,.15/speed);
++  out=mv_add(out,(struct mv_vec){s->velocity.x*horizon,s->velocity.y*horizon,s->velocity.z*horizon});
++ }
++ return out;
++}
++/* Call on the first observed sensor/update loss, including external IMU or
++ * mailbox failure. Repeated polling during an outage must not advance HOLD. */
++static inline void mv_deactivate(struct mv_state *s,uint64_t now){
++ if(s->active)s->predicted_hold=mv_predict(s,now);
++ s->active=false;
++}
++static inline bool mv_update(struct mv_state *s,struct mv_packet p,struct mv_quat local_head,double angular_speed,uint64_t now){
++ if(!p.epoch||!p.timestamp||p.timestamp>p.published||p.published>now||now-p.timestamp>200000000ULL||
++    !mv_finite(p.position)||!mv_finite(p.head_offset)||mv_norm(p.head_offset)>.5||
++    !isfinite(angular_speed)||!mv_normalize(&p.orientation)||!mv_normalize(&local_head)){
++  mv_deactivate(s,now);s->anchored=false;return false;
++ }
++ if(s->epoch==p.epoch&&p.timestamp<s->last_timestamp){mv_deactivate(s,now);s->anchored=false;return false;}
++ if(!p.ready){
++  mv_deactivate(s,now);
++  if(s->epoch!=p.epoch||p.timestamp-s->last_timestamp>250000000ULL)s->anchored=false;
++  return false;
++ }
++ if(s->active&&s->epoch==p.epoch&&p.timestamp==s->last_timestamp)return true;
++ struct mv_vec head=mv_add(p.position,mv_rotate(p.orientation,p.head_offset));
++ if(!s->anchored||s->epoch!=p.epoch||p.timestamp-s->last_timestamp>250000000ULL){
++  if(angular_speed>.15){mv_deactivate(s,now);s->anchored=false;return false;}
++  /* Preserve the update-timeline prediction across a long loss/new epoch;
++   * raw position remains untouched for the prediction-disabled path. */
++  struct mv_vec held=s->active?mv_predict(s,now):s->predicted_hold;
++  s->prediction_offset=mv_sub(held,s->position);
++  s->alignment=mv_multiply(local_head,mv_inverse(p.orientation));
++  s->can_predict=false;s->last_offset=mv_rotate(p.orientation,p.head_offset);s->last_orientation=p.orientation;
++  s->head_origin=head;s->position_origin=s->position;s->last_head=head;
++  s->epoch=p.epoch;s->last_timestamp=p.timestamp;s->active=true;s->anchored=true;return true;
++ }
++ double dt=(p.timestamp-s->last_timestamp)*1e-9;
++ // Reject discontinuities before estimating render-time motion.
++ if(dt<=0||dt>.25||mv_norm(mv_sub(head,s->last_head))>3.0*dt+.02){mv_deactivate(s,now);s->anchored=false;return false;}
++ struct mv_vec offset=mv_rotate(p.orientation,p.head_offset);
++ s->can_predict=false;
++ if(p.velocity_valid&&mv_finite(p.velocity)&&dt<=.1){
++  struct mv_vec lever=mv_lever_velocity(s->last_orientation,p.orientation,offset,dt);
++  s->velocity=mv_rotate(s->alignment,mv_add(p.velocity,lever));
++  s->can_predict=mv_finite(s->velocity)&&mv_norm(s->velocity)<=3.;
++ }
++ s->last_offset=offset;s->last_orientation=p.orientation;
++ s->position=mv_add(s->position_origin,mv_rotate(s->alignment,mv_sub(head,s->head_origin)));
++ s->last_head=head;s->last_timestamp=p.timestamp;s->active=true;return true;
++}
++/* Pure pose query. Explicit loss freezes at first update reception time. With
++ * no new input, stale HOLD is the fixed prediction-horizon endpoint (100ms),
++ * already reached before the 150ms freshness expiry. Neither historical nor
++ * speculative future queries affect HOLD, raw positions, or reanchor state. */
++static inline struct mv_vec mv_render_position(const struct mv_state *s,uint64_t target,uint64_t now){
++ if(!s->active)return s->predicted_hold;
++ if(now<s->last_timestamp)return mv_predict(s,s->last_timestamp);
++ if(now-s->last_timestamp>150000000ULL)return mv_predict(s,now);
++ return mv_predict(s,target);
++}
++#endif
+--- /dev/null
++++ b/src/xrt/drivers/monterey/monterey_vio_io.h
+@@ -0,0 +1,42 @@
++/* Experimental pose mailbox v2. Atomic rename by writer; read only from a
++ * separate polling thread, never from the IMU or OpenXR pose callback.
++ * Exactly 160 bytes, little endian integers and IEEE754 binary64 fields.
++ */
++#ifndef MONTEREY_VIO_IO_H
++#define MONTEREY_VIO_IO_H
++#include "monterey_vio.h"
++#include <string.h>
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#define MV_WIRE_SIZE 160
++static inline uint64_t mv_get64(const unsigned char *b){uint64_t v=0;for(int i=7;i>=0;i--)v=(v<<8)|b[i];return v;}
++static inline void mv_put64(unsigned char *b,uint64_t v){for(int i=0;i<8;i++){b[i]=(unsigned char)v;v>>=8;}}
++static inline double mv_get_double(const unsigned char *b){uint64_t v=mv_get64(b);double d;memcpy(&d,&v,8);return d;}
++static inline void mv_put_double(unsigned char *b,double d){uint64_t v;memcpy(&v,&d,8);mv_put64(b,v);}
++static inline void mv_encode(unsigned char b[MV_WIRE_SIZE],const struct mv_packet *p){
++ memset(b,0,MV_WIRE_SIZE);memcpy(b,"QVIO002",7);
++ mv_put64(b+8,p->epoch);mv_put64(b+16,p->timestamp);mv_put64(b+24,p->published);
++ const double v[]={p->position.x,p->position.y,p->position.z,p->orientation.x,p->orientation.y,p->orientation.z,p->orientation.w,p->head_offset.x,p->head_offset.y,p->head_offset.z};
++ for(unsigned i=0;i<10;i++)mv_put_double(b+32+8*i,v[i]);
++ mv_put64(b+112,p->ready);mv_put64(b+120,p->velocity_valid);
++ mv_put_double(b+128,p->velocity.x);mv_put_double(b+136,p->velocity.y);mv_put_double(b+144,p->velocity.z);
++}
++static inline bool mv_decode(const unsigned char b[MV_WIRE_SIZE],struct mv_packet *p){
++ if(memcmp(b,"QVIO002\0",8)||mv_get64(b+112)>1||mv_get64(b+120)>1||mv_get64(b+152))return false;
++ struct mv_packet v;memset(&v,0,sizeof(v));v.epoch=mv_get64(b+8);v.timestamp=mv_get64(b+16);v.published=mv_get64(b+24);
++ v.position=(struct mv_vec){mv_get_double(b+32),mv_get_double(b+40),mv_get_double(b+48)};
++ v.orientation=(struct mv_quat){mv_get_double(b+56),mv_get_double(b+64),mv_get_double(b+72),mv_get_double(b+80)};
++ v.head_offset=(struct mv_vec){mv_get_double(b+88),mv_get_double(b+96),mv_get_double(b+104)};
++ v.velocity_valid=mv_get64(b+120)!=0;v.velocity=(struct mv_vec){mv_get_double(b+128),mv_get_double(b+136),mv_get_double(b+144)};
++ v.ready=(unsigned)mv_get64(b+112);*p=v;return true;
++}
++static inline bool mv_read_packet(const char *path,struct mv_packet *p){
++ int fd=open(path,O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_NOFOLLOW);if(fd<0)return false;
++ struct stat st;unsigned char b[MV_WIRE_SIZE+1];bool ok=false;
++ if(fstat(fd,&st)==0&&S_ISREG(st.st_mode)&&st.st_size==MV_WIRE_SIZE){
++  ssize_t n=read(fd,b,sizeof(b));if(n==MV_WIRE_SIZE)ok=mv_decode(b,p);
++ }
++ close(fd);return ok;
++}
++#endif

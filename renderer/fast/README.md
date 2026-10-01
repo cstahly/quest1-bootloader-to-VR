@@ -39,3 +39,16 @@ Direct access validates exact2880x1600 32bpp stride and supported RGB layouts be
 Limitations: framebuffer copies use a single scanout buffer and may tear; submissions request FB_ACTIVATE_VBL but the two CPU buffers do not provide atomic scanout page flipping. There is no GPU acceleration or systemwide Monado optics integration here. Direct mode does not currently receive X11 controller/key recenter events. Tracked motion and image orientation require wearer validation; static fps alone is insufficient. Stock proprietary mesh and built executables are not committed.
 
 For separate physical calibration/readiness, set `MONTEREY_START_FILE` to a fresh nonexistent path. The wrapper starts/calibrates the runtime, then waits for that file before starting the scene. Verify `Gravity initialized` in `/tmp/monado-mesh-fb-service.log`, ask the wearer to put it on, and create the file only after their readiness reply. Do not reuse a stale gate file.
+
+
+Hold either thumbstick click for one second to **start from here**: reset scene
+position and forward heading while preserving gravity. In positional mode a reset
+waits for a fresh tracked position; HUD confirms START HERE SET. It does not reset
+the estimator, delete drawings, or change either recovery mechanism. Short stick
+click still cycles camera effects, now on release. Keyboard R/Space uses the same
+recenter request in the optional X11 diagnostic.
+
+The installed camera layout is a single composite wall left of the cube (1.45m ×
+1.0875m, distance3m, heading−42°). Four separate panels and the floor surface are
+removed. Camera effects process one320×240 composite; raw tracking still uses all
+four cameras. The existing fixed-depth stitch map retains its floor-map filename.

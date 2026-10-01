@@ -1,0 +1,9 @@
+# Verified startup profile; runtime auto-exposure adjusts after all sensors agree.
+# Shared shutter preserves camera synchronization; individual Q4 gains are bounded.
+# Auto policy: 1..8 ms, gain16..240, preferring4 ms before increasing shutter.
+export CAMERA_EXPOSURE_US=12000
+export CAMERA_GAIN_Q4=16
+export CAMERA_AUTO_EXPOSURE=1
+
+# Centred low-pass filtering before2x decimation; keeps calibration coordinates.
+export CAMERA_DENOISE=1

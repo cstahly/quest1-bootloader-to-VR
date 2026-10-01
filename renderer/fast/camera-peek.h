@@ -1,4 +1,4 @@
-/* Small mono composite texture for the floor monitor. Both eyes share the
+/* Small mono composite texture for the wall monitor. Both eyes share the
  * same camera selection; scene geometry supplies binocular panel placement.
  * The chosen-depth stitching remains approximate, not depth-aware passthrough. */
 #ifndef QUEST_CAMERA_PEEK_H
@@ -6,7 +6,7 @@
 #ifndef CAMERA_PEEK_MAP_PATH
 #define CAMERA_PEEK_MAP_PATH "/var/lib/monado/monterey/floor-map.bin"
 #endif
-static struct {unsigned *map,publication;unsigned char *pixels;int tried,valid;} camera_peek;
+static struct {unsigned *map,publication;unsigned char *pixels;int tried,valid,mode;unsigned char previous[320*240],trail[320*240];} camera_peek;
 static int camera_peek_load(void){
  if(camera_peek.tried)return camera_peek.map!=NULL;
  camera_peek.tried=1;FILE *f=fopen(CAMERA_PEEK_MAP_PATH,"rb");if(!f)return 0;
@@ -23,10 +23,26 @@ static void camera_floor_update(void){
  camera_peek.valid=0;
  if(!camera_peek_load()||!camera_panel.valid)return;
  camera_peek.valid=1;
- if(camera_peek.publication!=camera_panel.feed.publication){
+ if(camera_peek.publication!=camera_panel.feed.publication||camera_peek.mode!=camera_controls.mode){
+  int fresh=camera_peek.publication!=camera_panel.feed.publication;
   unsigned char tone[256];for(int v=0;v<256;v++)tone[v]=(unsigned char)lroundf(powf(fmaxf(0,(v-4.f)/251),1.f/2.2f)*255);
   const unsigned char *source=&camera_panel.feed.pixels[0][0];
-  for(unsigned i=0;i<320*240;i++)camera_peek.pixels[i]=camera_peek.map[i]==UINT_MAX?0:tone[source[camera_peek.map[i]]];
+  for(unsigned i=0;i<320*240;i++){
+   unsigned k=camera_peek.map[i];if(k==UINT_MAX){camera_peek.pixels[i]=0;continue;}
+   unsigned value=source[k],display=tone[value];
+   if(fresh){
+    unsigned motion=(unsigned)abs((int)value-camera_peek.previous[i])*10;
+    unsigned trail=camera_peek.trail[i]*235U/256;if(motion>trail)trail=motion;if(trail>255)trail=255;
+    camera_peek.trail[i]=trail;camera_peek.previous[i]=value;
+   }
+   if(camera_controls.mode==1){
+    unsigned local=k%QUEST_CAMERA_PIXELS;
+    unsigned left=local%320?source[k-1]:value,up=local>=320?source[k-320]:value;
+    display=4U*(abs((int)value-(int)left)+abs((int)value-(int)up));if(display>255)display=255;
+   }else if(camera_controls.mode==2){display=display/4+camera_peek.trail[i];if(display>255)display=255;}
+   camera_peek.pixels[i]=(unsigned char)display;
+  }
+  camera_peek.mode=camera_controls.mode;
   camera_peek.publication=camera_panel.feed.publication;
  }
 }

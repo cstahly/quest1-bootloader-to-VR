@@ -60,14 +60,19 @@ suppressing acceleration is not sufficient acceptance evidence.
 
 ## Build status and patch selection
 
-A native aarch64-musl Basalt library and replay executable have built. A three-frame
-real-data replay completed with 3/3 poses inside the ARM buildroot under emulation.
-That proves a small executable smoke test, not headset performance or live 6DoF.
+A native aarch64-musl Basalt library and a private19MB dependency bundle now run on
+headset. A bounded live probe produced301/301 poses in20seconds from current stereo
+camera input at15Hz and full-rate IMU. Median age from driver camera timestamp to
+pose polling was43ms, maximum69ms. This is not sensor-to-display latency, accepted
+positional accuracy, or a live pose connected to the view.
+See [native probe instructions](../../tools/tracking/README.md).
 
 Apply [0001](../../patches/basalt/0001-vit-null-end-of-stream-pose.patch) for the EOS
 fix and [0003](../../patches/basalt/0003-headless-cross-build.patch) for the headless
 cross-build. **Do not apply every patch in the directory:** experimental 0002 patch
-rotation did not improve the tested result and was reverted. The cross toolchain is
+rotation did not improve the tested result and was reverted. Patch 0004 is a host-only
+triangulation experiment with mixed replay results; it was reverted and is not an
+accepted installation patch. The cross toolchain is
 [aarch64-musl-toolchain.cmake](../../tools/tracking/aarch64-musl-toolchain.cmake).
 Build dependencies belong in the buildroot, not wholesale on the headset. Runtime
 libraries must be audited and staged privately before a device trial.
