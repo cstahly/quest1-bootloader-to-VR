@@ -31,7 +31,7 @@ A macOS/Linux box for USB-net + SSH into the headset works fine as the control s
 ## This repo
 
 ```
-git clone https://github.com/cstahly/quest1-nura-port && cd quest1-nura-port
+git clone https://github.com/cstahly/quest1-bootloader-to-VR && cd quest1-bootloader-to-VR
 ```
 
 Port packages, patches, tools, docs — no images/blobs/keys.
