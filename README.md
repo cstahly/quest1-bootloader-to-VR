@@ -126,10 +126,11 @@ or outside the repo.
 
 ## License
 
-**TBD.** The pmaports port packages are MIT; the Monado patch applies to Monado
-(Boost Software License 1.0). The renderer and tooling here are the author's own — pick a
-license before publishing (MIT is the natural match for the pmaports side). Until then,
-default copyright applies.
+[MIT](LICENSE). Files under `patches/` keep the license of the project they patch
+(Monado: BSL-1.0; Linux kernel: GPL-2.0; Basalt, rmtfs, pd-mapper, tqftpserv:
+BSD-3-Clause). Meta/Oculus
+firmware, calibration and lens assets are not part of this repository and are not
+covered by this license.
 
 <!-- TODO: confirm and fill in the real upstream URL for the Block-Flock port -->
 [upstream]: #credits
